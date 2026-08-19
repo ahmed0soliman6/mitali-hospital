@@ -25,5 +25,16 @@ assert.match(source, /amount - \(Number\(incomeDocShareInput\.value\) \|\| 0\)/,
 assert.match(source, /amount - \(Number\(incomeClinicShareInput\.value\) \|\| 0\)/, 'clinic share should calculate doctor remainder');
 assert.match(source, /income-share-fields/, 'share inputs should use responsive layout');
 assert.doesNotMatch(source, /id="generateDemo"|id="resetDemo"/, 'legacy demo-data controls must be removed');
+assert.doesNotMatch(source, /إجمالي الحساب \(ج\.م\)/, 'diary total labels should omit the currency suffix');
+assert.doesNotMatch(source, /موعد المتابعة \(اختياري\)/, 'follow-up labels should omit optional text');
+assert.match(source, /name="consultationPrice"/, 'doctor card must expose consultation price');
+assert.match(source, /name="consultationClinicFee"/, 'doctor card must expose consultation clinic share');
+assert.match(source, /name="sessionPrice"/, 'doctor card must expose session price');
+assert.match(source, /name="sessionClinicFee"/, 'doctor card must expose session clinic share');
+assert.match(source, /examType === "استشارة"/, 'consultation selection must use its own price');
+assert.match(source, /examType === "جلسة"/, 'session selection must use its own price');
+assert.match(source, /clinicFeeForDoctor\(d, visit\.examType\)/, 'clinic share must follow the selected exam type');
+assert.match(source, /const shareInputValue = \(value\) =>/, 'share fields must normalize displayed values');
+assert.match(source, /return number > 0 \? number\.toFixed\(2\) : ""/, 'zero share values should render as blank inputs');
 
 console.log('PASS income-form-test: field order, responsive share fields, bidirectional share calculation, and demo-card removal contract.');

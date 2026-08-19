@@ -173,6 +173,13 @@
   .diary-form .diary-triple-row{grid-template-columns:repeat(3,minmax(0,1fr));}
   .diary-form .diary-bottom-row{grid-template-columns:repeat(3,minmax(0,1fr)); align-items:end;}
   .diary-form .field{min-width:0;}
+  .diary-form .field label{color:var(--navy); font-weight:800;}
+  .diary-form input,.diary-form select,.diary-form textarea{border-color:color-mix(in srgb, var(--teal) 28%, var(--line)); box-shadow:inset 0 1px 2px rgba(16,42,53,.04);}
+  .diary-form input:focus,.diary-form select:focus,.diary-form textarea:focus{border-color:var(--teal); box-shadow:0 0 0 3px color-mix(in srgb, var(--teal) 16%, transparent);}
+  .diary-form select option{background:var(--card); color:var(--ink);}
+  html[data-theme="dark"] .diary-form .field label{color:#DCE9E6;}
+  html[data-theme="dark"] .diary-form input,html[data-theme="dark"] .diary-form select,html[data-theme="dark"] .diary-form textarea{border-color:#466366; background:#102124; color:#F1F7F5; box-shadow:inset 0 1px 2px rgba(0,0,0,.24); color-scheme:dark;}
+  html[data-theme="dark"] .diary-form input::placeholder,html[data-theme="dark"] .diary-form textarea::placeholder{color:#91AAA6;}
   .diary-form .diary-primary-row .field,.diary-form .diary-triple-row .field,.diary-form .diary-bottom-row .field{grid-column:auto !important;}
   .top-alerts-wrap{position:relative; display:inline-flex; flex:0 0 auto;}
   .top-alerts-btn{position:relative; display:inline-flex; align-items:center; justify-content:center; width:34px; min-width:34px; height:30px; padding:0; border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--ink); font-size:16px; cursor:pointer;}
@@ -234,10 +241,11 @@
     #content{padding:12px 10px 42px; width:100%; min-width:0;}
     .form-grid{grid-template-columns:1fr !important; gap:10px;}
     .diary-form .diary-primary-row{grid-template-columns:repeat(2,minmax(0,1fr));}
-    .diary-form .diary-triple-row{grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px;}
-    .diary-form .diary-bottom-row{grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px;}
+    .diary-form .diary-triple-row{grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;}
+    .diary-form .diary-bottom-row{grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;}
     .diary-form .field label{font-size:12px; line-height:1.35;}
-    .diary-form input,.diary-form select,.diary-form textarea{min-width:0; font-size:13px;}
+    .diary-form input,.diary-form select,.diary-form textarea{min-width:0; min-height:42px; font-size:13px; padding:9px 8px;}
+    .diary-form .field{width:100%;}
     .top-alerts-panel{inset-inline-start:10px; inset-inline-end:10px;}
     .two-col{grid-template-columns:1fr; gap:10px;}
     .table-wrap{width:100%; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch;}
@@ -254,6 +262,9 @@
   @media (max-width:1100px){.grid-4{grid-template-columns:repeat(2,1fr);} .grid-3{grid-template-columns:repeat(2,1fr);}}
   /* تخطيط الهاتف: بطاقتا KPI في الصف مع السماح بانكسار العناوين الطويلة
      بطريقة مقروءة، لتقليل التمرير الرأسي مع الحفاظ على وضوح البيانات. */
+  @media (max-width:380px){
+    .diary-form .diary-primary-row,.diary-form .diary-triple-row,.diary-form .diary-bottom-row{grid-template-columns:1fr;}
+  }
   @media (max-width:560px){
     /* بطاقات لوحة التحكم: بطاقتان في الصف على الهاتف بدل بطاقة واحدة */
     .grid-4, .grid-3, .grid-2{grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px;}
@@ -1292,7 +1303,7 @@ function doctorFeeSummary(d) {
   const mode = d.type === "أسنان" ? "percent" : (d.feeMode || "fixed_visit");
   if (mode === "percent") return `طبيب ${pctDisplay(d.docPct)}% / مجمع ${pctDisplay(d.clinicPct)}%`;
   if (mode === "fixed_daily") return `أجر يومي ثابت ${fmt(d.dailyFixedAmount)} ج.م`;
-  return `كشف ${fmt(d.checkupPrice)} (مجمع ${fmt(d.checkupClinicFee)}) · متابعة ${fmt(d.followupPrice)} (مجمع ${fmt(d.followupClinicFee)})`;
+  return `كشف ${fmt(d.checkupPrice)} (مجمع ${fmt(d.checkupClinicFee)}) · متابعة ${fmt(d.followupPrice)} (مجمع ${fmt(d.followupClinicFee)}) · استشارة ${fmt(d.consultationPrice ?? d.checkupPrice)} · جلسة ${fmt(d.sessionPrice ?? d.checkupPrice)}`;
 }
 function dName(id) { const d = DB.doctors.find(x => x.id === id); return d ? d.name : "-"; }
 function dInfo(id) { return DB.doctors.find(x => x.id === id); }
@@ -1825,6 +1836,20 @@ function isPercentFeeMode(doctorId) {
   if (!d) return true;
   return (d.type === "أسنان" ? "percent" : (d.feeMode || "fixed_visit")) === "percent";
 }
+function examPriceForDoctor(doctor, examType) {
+  if (!doctor) return 0;
+  if (examType === "متابعة") return Number(doctor.followupPrice) || 0;
+  if (examType === "استشارة") return Number(doctor.consultationPrice ?? doctor.checkupPrice) || 0;
+  if (examType === "جلسة") return Number(doctor.sessionPrice ?? doctor.checkupPrice) || 0;
+  return Number(doctor.checkupPrice) || 0;
+}
+function clinicFeeForDoctor(doctor, examType) {
+  if (!doctor) return 0;
+  if (examType === "متابعة") return Number(doctor.followupClinicFee) || 0;
+  if (examType === "استشارة") return Number(doctor.consultationClinicFee ?? doctor.checkupClinicFee) || 0;
+  if (examType === "جلسة") return Number(doctor.sessionClinicFee ?? doctor.checkupClinicFee) || 0;
+  return Number(doctor.checkupClinicFee) || 0;
+}
 function computeShare(visit) {
   const d = dInfo(visit.doctorId);
   if (!d) return { doc: 0, clinic: 0 };
@@ -1834,7 +1859,7 @@ function computeShare(visit) {
   if (mode === "fixed_visit") {
     const hasSnapshot = visit.clinicFeeSnapshot !== undefined && visit.clinicFeeSnapshot !== null;
     const clinicFee = hasSnapshot ? Number(visit.clinicFeeSnapshot)
-      : (visit.examType === "متابعة" ? Number(d.followupClinicFee) || 0 : Number(d.checkupClinicFee) || 0);
+      : clinicFeeForDoctor(d, visit.examType);
     const clinicShare = Math.min(Math.max(clinicFee, 0), paid);
     return { doc: paid - clinicShare, clinic: clinicShare };
   }
@@ -2199,7 +2224,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.33";
+const APP_VERSION = "v1.3.34";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -3301,19 +3326,19 @@ function renderVisitsPage(kind) {
           <div class="field"><label>الطبيب</label>
             <select name="doctorId" id="visitDoctorSelect" required>
               <option value="">اختر طبيبًا</option>
-              ${doctorsPool.map(d => `<option value="${d.id}" ${editing?.doctorId === d.id ? "selected" : ""} data-checkup-price="${d.checkupPrice ?? ""}" data-followup-price="${d.followupPrice ?? ""}">${esc(d.name)} — ${esc(d.specialty)}</option>`).join("")}
+              ${doctorsPool.map(d => `<option value="${d.id}" ${editing?.doctorId === d.id ? "selected" : ""} data-checkup-price="${d.checkupPrice ?? ""}" data-followup-price="${d.followupPrice ?? ""}" data-consultation-price="${d.consultationPrice ?? d.checkupPrice ?? ""}" data-session-price="${d.sessionPrice ?? d.checkupPrice ?? ""}">${esc(d.name)} — ${esc(d.specialty)}</option>`).join("")}
             </select>
           </div>
           <div class="field"><label>نوع الكشف</label><select name="examType" id="visitExamTypeSelect">${option(LISTS.examTypes, editing?.examType)}</select></div>
         </div>
         <div class="diary-triple-row">
-          <div class="field"><label>إجمالي الحساب (ج.م)</label><input type="text" inputmode="decimal" step="0.01" name="total" id="visitTotalInput" required value="${editing?.total ?? ""}"></div>
+          <div class="field"><label>إجمالي الحساب</label><input type="text" inputmode="decimal" step="0.01" name="total" id="visitTotalInput" required value="${editing?.total ?? ""}"></div>
           <div class="field"><label>المدفوع</label><input type="text" inputmode="decimal" step="0.01" name="paid" required value="${editing?.paid ?? ""}"></div>
           <div class="field"><label>حالة الدفع</label><select name="status">${option(LISTS.payStatus, editing?.status)}</select></div>
         </div>
         <div class="diary-bottom-row">
           <div class="field"><label>ملاحظات</label><input type="text" name="notes" value="${esc(editing?.notes)}"></div>
-          <div class="field"><label>موعد المتابعة (اختياري)</label><input type="date" name="nextVisitDate" value="${editing?.nextVisitDate || ""}"></div>
+          <div class="field"><label>موعد المتابعة</label><input type="date" name="nextVisitDate" value="${editing?.nextVisitDate || ""}"></div>
           <div class="field" style="align-self:end; display:flex; gap:8px;">
             <button type="submit" class="btn">${editing ? "حفظ التعديل" : "تسجيل الزيارة"}</button>
             ${editing ? `<button type="button" class="btn ghost" id="cancelEdit">إلغاء</button>` : ""}
@@ -3526,7 +3551,11 @@ function renderVisitsPage(kind) {
     function prefillDefaultPrice() {
       const opt = visitDoctorSelect?.selectedOptions[0];
       if (!opt || !opt.value) return;
-      const price = visitExamTypeSelect?.value === "متابعة" ? opt.dataset.followupPrice : opt.dataset.checkupPrice;
+      const examType = visitExamTypeSelect?.value || "كشف";
+      const price = examType === "متابعة" ? opt.dataset.followupPrice
+        : examType === "استشارة" ? opt.dataset.consultationPrice
+        : examType === "جلسة" ? opt.dataset.sessionPrice
+        : opt.dataset.checkupPrice;
       if (price) visitTotalInput.value = price;
     }
     if (visitDoctorSelect) visitDoctorSelect.addEventListener("change", prefillDefaultPrice);
@@ -3637,12 +3666,12 @@ function renderServiceVisitsPage(kind) {
               })()
                           : `<input type="text" name="serviceName" required value="${esc(editing?.serviceName)}">`}
           </div>
-          <div class="field"><label>إجمالي الحساب (ج.م)</label><input type="text" inputmode="decimal" step="0.01" name="total" required value="${editingTotal}"></div>
+          <div class="field"><label>إجمالي الحساب</label><input type="text" inputmode="decimal" step="0.01" name="total" required value="${editingTotal}"></div>
         </div>
         <div class="diary-triple-row">
           <div class="field"><label>المدفوع</label><input type="text" inputmode="decimal" step="0.01" name="paid" required value="${editingPaid}"></div>
           <div class="field"><label>حالة الدفع</label><select name="status">${option(LISTS.payStatus, editing?.status)}</select></div>
-          <div class="field"><label>موعد المتابعة (اختياري)</label><input type="date" name="nextVisitDate" value="${editing?.nextVisitDate || ""}"></div>
+          <div class="field"><label>موعد المتابعة</label><input type="date" name="nextVisitDate" value="${editing?.nextVisitDate || ""}"></div>
         </div>
         <div class="diary-bottom-row">
           <div class="field" style="grid-column:span 2;"><label>ملاحظات</label><input type="text" name="notes" value="${esc(editing?.notes)}"></div>
@@ -4422,6 +4451,10 @@ function renderMoneyPage(kind) {
     // المجمَّع - وهما اللي تُحفَظان فعليًا وتُستخدَمان فى كل التقارير (بدل التخمين
     // التلقائي)، مع تحقق يمنع الحفظ لو مجموعهما لا يساوي المبلغ الإجمالي بالضبط.
     let lastEditedShare = "";
+    const shareInputValue = (value) => {
+      const number = Number(value) || 0;
+      return number > 0 ? number.toFixed(2) : "";
+    };
     const updateShareTip = () => {
       const opt = incomeDoctorSelect.selectedOptions[0];
       const amountInput = moneyForm.querySelector('[name="amount"]');
@@ -4439,10 +4472,10 @@ function renderMoneyPage(kind) {
       // تعبئة تلقائية متوازنة: مجموع الحصتين يساوي المبلغ دائمًا.
       if (incomeDocShareInput && incomeDocShareInput.value === "") {
         const initialDoctorShare = mode === "percent" ? Math.round(amount * docPct * 100) / 100 : 0;
-        incomeDocShareInput.value = initialDoctorShare.toFixed(2);
+        incomeDocShareInput.value = shareInputValue(initialDoctorShare);
       }
       if (incomeClinicShareInput && incomeClinicShareInput.value === "") {
-        incomeClinicShareInput.value = Math.max(0, amount - (Number(incomeDocShareInput?.value) || 0)).toFixed(2);
+        incomeClinicShareInput.value = shareInputValue(Math.max(0, amount - (Number(incomeDocShareInput?.value) || 0)));
       }
       if (mode === "fixed_visit") {
         incomeShareTip.innerHTML = `هذا الطبيب على مبلغ ثابت لكل زيارة؛ يبدأ النظام بكامل المبلغ للمجمع، ويمكنك تعديل حصة الطبيب أو المجمع ليحسب الطرف الآخر تلقائيًا.`;
@@ -4465,13 +4498,13 @@ function renderMoneyPage(kind) {
     const syncRemainingShare = (source) => {
       const amount = Math.max(0, Number(moneyForm.querySelector('[name="amount"]')?.value) || 0);
       if (source === "doctor" && incomeDocShareInput && incomeClinicShareInput) {
-        incomeClinicShareInput.value = Math.max(0, amount - (Number(incomeDocShareInput.value) || 0)).toFixed(2);
+        incomeClinicShareInput.value = shareInputValue(Math.max(0, amount - (Number(incomeDocShareInput.value) || 0)));
       } else if (source === "clinic" && incomeDocShareInput && incomeClinicShareInput) {
-        incomeDocShareInput.value = Math.max(0, amount - (Number(incomeClinicShareInput.value) || 0)).toFixed(2);
+        incomeDocShareInput.value = shareInputValue(Math.max(0, amount - (Number(incomeClinicShareInput.value) || 0)));
       } else if (source === "amount" && lastEditedShare === "doctor" && incomeDocShareInput && incomeClinicShareInput) {
-        incomeClinicShareInput.value = Math.max(0, amount - (Number(incomeDocShareInput.value) || 0)).toFixed(2);
+        incomeClinicShareInput.value = shareInputValue(Math.max(0, amount - (Number(incomeDocShareInput.value) || 0)));
       } else if (source === "amount" && lastEditedShare === "clinic" && incomeDocShareInput && incomeClinicShareInput) {
-        incomeDocShareInput.value = Math.max(0, amount - (Number(incomeClinicShareInput.value) || 0)).toFixed(2);
+        incomeDocShareInput.value = shareInputValue(Math.max(0, amount - (Number(incomeClinicShareInput.value) || 0)));
       }
       updateShareSumHint();
     };
@@ -5480,7 +5513,11 @@ function renderSettings() {
             <div class="field"><label>نصيب المجمع الثابت من الكشف (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="checkupClinicFee" value="${editingDoc?.checkupClinicFee ?? 20}"></div>
             <div class="field"><label>سعر المتابعة الافتراضي (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="followupPrice" value="${editingDoc?.followupPrice ?? 50}"></div>
             <div class="field"><label>نصيب المجمع الثابت من المتابعة (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="followupClinicFee" value="${editingDoc?.followupClinicFee ?? 20}"></div>
-            <div class="hint" style="grid-column:span 2;">المجمع ياخد نصيبه الثابت هنا دايمًا كأولوية (حتى لو حصل خصم على المريض)، والباقي من المبلغ المحصَّل فعليًا للطبيب. تغيير هذه الأرقام مستقبلًا لا يُغيّر حسابات الزيارات القديمة المسجَّلة بالفعل - يُطبَّق على الزيارات الجديدة فقط.</div>
+            <div class="field"><label>سعر الاستشارة الافتراضي (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="consultationPrice" value="${editingDoc?.consultationPrice ?? editingDoc?.checkupPrice ?? 70}"></div>
+            <div class="field"><label>نصيب المجمع الثابت من الاستشارة (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="consultationClinicFee" value="${editingDoc?.consultationClinicFee ?? editingDoc?.checkupClinicFee ?? 20}"></div>
+            <div class="field"><label>سعر الجلسة الافتراضي (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="sessionPrice" value="${editingDoc?.sessionPrice ?? editingDoc?.checkupPrice ?? 70}"></div>
+            <div class="field"><label>نصيب المجمع الثابت من الجلسة (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="sessionClinicFee" value="${editingDoc?.sessionClinicFee ?? editingDoc?.checkupClinicFee ?? 20}"></div>
+            <div class="hint" style="grid-column:span 2;">يمكن تحديد سعر مستقل للكشف والمتابعة والاستشارة والجلسة. تُستخدم القيم تلقائيًا عند اختيار نوع الكشف في اليومية، وتُطبق على الزيارات الجديدة فقط.</div>
           </div>
 
           <div id="fixedDailyFeeFields" style="display:contents;">
@@ -5900,6 +5937,10 @@ function renderSettings() {
       docPct: docPctVal / 100, clinicPct: clinicPctVal / 100,
       checkupPrice: Number(fd.get("checkupPrice")) || 0, checkupClinicFee: Number(fd.get("checkupClinicFee")) || 0,
       followupPrice: Number(fd.get("followupPrice")) || 0, followupClinicFee: Number(fd.get("followupClinicFee")) || 0,
+      consultationPrice: Number(fd.get("consultationPrice")) || Number(fd.get("checkupPrice")) || 0,
+      consultationClinicFee: Number(fd.get("consultationClinicFee")) || Number(fd.get("checkupClinicFee")) || 0,
+      sessionPrice: Number(fd.get("sessionPrice")) || Number(fd.get("checkupPrice")) || 0,
+      sessionClinicFee: Number(fd.get("sessionClinicFee")) || Number(fd.get("checkupClinicFee")) || 0,
       dailyFixedAmount: Number(fd.get("dailyFixedAmount")) || 0,
       phone: fd.get("phone"), workDays: fd.get("workDays"), workHours: fd.get("workHours"), notes: fd.get("notes"),
     };
