@@ -9,6 +9,10 @@ assert.match(resetBlock, /xrayTypes:\s*\[/, 'xrayTypes must exist after cleanup'
 assert.match(resetBlock, /labTestTypes:\s*\[/, 'labTestTypes must exist after cleanup');
 assert.match(source, /DB\.settings\.xrayTypes\.length/, 'settings page contract should remain covered');
 assert.match(source, /DB\.settings\.labTestTypes\.length/, 'settings page contract should remain covered');
+assert.match(source, /function ensureSettingsDefaults\(value\)/, 'settings normalization helper must exist');
+assert.match(source, /DB\.settings = ensureSettingsDefaults\(DB\.settings\)/, 'renderSettings must normalize settings before rendering');
+assert.match(source, /function renderPageError\(error\)/, 'route must expose render errors instead of leaving blank content');
+assert.match(source, /Page render failed:/, 'route must catch renderer exceptions');
 const cloudKeysStart = source.indexOf('const CLOUD_BUSINESS_KEYS_TO_CLEAR = [');
 const cloudKeysEnd = source.indexOf('];', cloudKeysStart);
 const cloudKeys = source.slice(cloudKeysStart, cloudKeysEnd);

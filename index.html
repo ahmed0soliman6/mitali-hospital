@@ -436,6 +436,19 @@ const DB = {
   labExpenses: [],
 };
 
+const DEFAULT_XRAY_TYPES = ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار"];
+const DEFAULT_LAB_TEST_TYPES = ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد"];
+function ensureSettingsDefaults(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    ...source,
+    openingBalance: Number.isFinite(Number(source.openingBalance)) ? Number(source.openingBalance) : 0,
+    idleTimeoutMinutes: source.idleTimeoutMinutes === 0 ? 0 : (Number(source.idleTimeoutMinutes) > 0 ? Number(source.idleTimeoutMinutes) : 5),
+    xrayTypes: Array.isArray(source.xrayTypes) && source.xrayTypes.length ? [...source.xrayTypes] : [...DEFAULT_XRAY_TYPES],
+    labTestTypes: Array.isArray(source.labTestTypes) && source.labTestTypes.length ? [...source.labTestTypes] : [...DEFAULT_LAB_TEST_TYPES],
+  };
+}
+
 // تصنيفات الوارد والمنصرف - قابلة للإدارة بالكامل (إضافة/تعديل/حذف/ترتيب)
 function seedCategories() {
   return {
@@ -1495,17 +1508,11 @@ async function loadAll(options = {}) {
   DB.income = or(incomeRaw, []);
   DB.expense = or(expenseRaw, []);
   DB.payroll = or(payrollRaw, []);
-  DB.settings = settingsRaw || { openingBalance: 0 };
+  DB.settings = ensureSettingsDefaults(settingsRaw);
   // مهلة الإغلاق التلقائى بعد عدم الاستخدام (بالدقائق) - افتراضيًا 5 دقائق، ويمكن للمدير
   // تعديلها أو تعطيلها (0) من صفحة الإعدادات. لا نُعيد ضبطها هنا إن كانت محفوظة مسبقًا حتى
   // لو كانت صفرًا (معطّلة) حتى نحترم اختيار المدير.
-  if (DB.settings.idleTimeoutMinutes === undefined || DB.settings.idleTimeoutMinutes === null) DB.settings.idleTimeoutMinutes = 5;
-  if (!Array.isArray(DB.settings.xrayTypes) || !DB.settings.xrayTypes.length) {
-    DB.settings.xrayTypes = ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار"];
-  }
-  if (!Array.isArray(DB.settings.labTestTypes) || !DB.settings.labTestTypes.length) {
-    DB.settings.labTestTypes = ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد"];
-  }
+  DB.settings = ensureSettingsDefaults(DB.settings);
   const staffAccountsWasEmpty = !staffAccountsRaw || staffAccountsRaw.length === 0;
   DB.staffAccounts = or(staffAccountsRaw, seedStaffAccounts());
   // لا نُنشئ أو نكتب حسابات من الكاش المحلي؛ الحسابات تُدار عبر users/API فقط.
@@ -1602,6 +1609,7 @@ async function loadKeys(keys, options = {}) {
     const value = values[index];
     if (value !== undefined && value !== null) DB[key] = value;
   });
+  if (unique.includes("settings")) DB.settings = ensureSettingsDefaults(DB.settings);
   DATA_VERSION++;
 }
 function pageKeys(page) { return PAGE_DATA_KEYS[page] || ["doctors", "employees", "settings"]; }
@@ -2191,7 +2199,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.32";
+const APP_VERSION = "v1.3.33";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -2854,6 +2862,21 @@ function navigateBack() {
   state.skipPageHistory = true;
   route();
 }
+function renderPageError(error) {
+  const c = document.getElementById("content");
+  if (!c) return;
+  const message = String(error && (error.message || error.code) || "خطأ غير معروف").slice(0, 180);
+  c.innerHTML = `<div class="card" style="max-width:720px; margin:35px auto; text-align:center; padding:32px 20px;">
+    <div style="font-size:34px; margin-bottom:8px;">⚠️</div>
+    <div style="font-weight:800; font-size:16px;">تعذر عرض صفحة الإعدادات</div>
+    <div class="hint" style="margin:8px 0 16px;">لم تُحذف أي بيانات. أعد المحاولة أو أعد تحميل الصفحة.</div>
+    <button class="btn" data-retry-render>إعادة المحاولة</button>
+    <div class="hint" style="margin-top:12px; direction:ltr; font-size:10px; opacity:.65;">${esc(message)}</div>
+  </div>`;
+  c.querySelector("[data-retry-render]")?.addEventListener("click", () => {
+    try { route(); } catch (retryError) { console.error("Retry render failed:", retryError); }
+  });
+}
 function route() {
   state.page = normalizePageId(state.page);
   const nextPage = state.page;
@@ -2894,7 +2917,13 @@ function route() {
   if (state.page === "auditlog" && !isAdminUser()) { renderAccessDenied(); return; }
   if ((state.page === "users" || state.page === "permissions") && !isAdminUser()) { renderAccessDenied(); return; }
   if (state.page === "dataConflicts" && !can("settings","edit")) { renderAccessDenied(); return; }
-  (renderers[state.page] || renderDashboard)();
+  try {
+    (renderers[state.page] || renderDashboard)();
+  } catch (error) {
+    console.error("Page render failed:", state.page, error);
+    renderPageError(error);
+    return;
+  }
   if (currentUser && STORAGE_MODE === "firestore") subscribeFirestoreRealtime(state.page);
   schedulePageDataLoad(state.page);
 }
@@ -5254,6 +5283,9 @@ function sortedDoctors() {
 }
 function renderSettings() {
   const c = document.getElementById("content");
+  // حماية نهائية: حتى لو أعاد Firestore وثيقة settings قديمة/ناقصة أو لم توجد
+  // بعد الحذف، لا يجوز أن ينهار القالب عند قراءة xrayTypes أو labTestTypes.
+  DB.settings = ensureSettingsDefaults(DB.settings);
   const editingDoc = state.editDocId ? DB.doctors.find(d => d.id === state.editDocId) : null;
   const canSettingsEdit = can("settings", "edit");
   c.innerHTML = `
