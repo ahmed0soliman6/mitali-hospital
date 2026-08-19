@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hospital-v1.3.29-firestore-only';
+const CACHE_NAME = 'hospital-v1.3.30-firestore-only';
 const urlsToCache = ['./', './index.html', './manifest.json', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
 
 self.addEventListener('install', event => {

@@ -2109,7 +2109,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.29";
+const APP_VERSION = "v1.3.30";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -2162,8 +2162,7 @@ const NAV = [
   ]},
   { group: "الإدارة", items: [
     { id: "reports", label: "التقارير", icon: "&#128202;", perm: ["reports","view"] },
-    { id: "users", label: "إدارة المستخدمين", icon: "&#128100;", customCheck: "admin" },
-    { id: "permissions", label: "إدارة الصلاحيات", icon: "&#128274;", customCheck: "admin" },
+    { id: "users", label: "المستخدمون والصلاحيات", icon: "&#128100;", customCheck: "admin" },
     { id: "auditlog", label: "سجل النشاط", icon: "&#128220;", customCheck: "admin" },
     { id: "settings", label: "الإعدادات", icon: "&#9881;", customCheck: "settings" },
   ]},
@@ -2195,6 +2194,7 @@ function firstAccessibleOutstandingPage() {
   return Object.keys(OUTSTANDING_PAGE_SECTION).find(canOutstandingPage) || "outstandingBalancesClinic";
 }
 function normalizePageId(page) {
+  if (page === "permissions") return "users";
   return page === "outstandingBalances" || page === "outstandingBalancesMenu" ? firstAccessibleOutstandingPage() : page;
 }
 function navItemVisible(it) {
@@ -2225,7 +2225,7 @@ const PAGE_TITLES = {
   income: "الوارد — عمليات التحصيل", expense: "المنصرف — عمليات الصرف",
   ledger: "دفتر الخزينة", payroll: "المرتبات والمستحقات",
   reports: "التقارير", settings: "الإعدادات",
-  users: "إدارة المستخدمين", permissions: "إدارة الصلاحيات", auditlog: "سجل النشاط",
+  users: "المستخدمون والصلاحيات", permissions: "المستخدمون والصلاحيات", auditlog: "سجل النشاط",
   patientFilesClinic: "ملفات مرضى العيادات", patientFilesDental: "ملفات مرضى الأسنان",
   outstandingBalances: "مرضى عليهم مستحقات — كل الأقسام",
   outstandingBalancesClinic: "مستحقات العيادات", outstandingBalancesDental: "مستحقات الأسنان",
@@ -5224,34 +5224,6 @@ function renderSettings() {
       </div>
     </div>` : ""}
 
-    ${isAdminUser() ? `
-    <div class="card" style="margin-bottom:18px;">
-      <div class="section-title">🔐 حسابات تسجيل الدخول للموظفين <span class="hint">${(DB.staffAccounts||[]).length} حساب</span></div>
-      ${can("users","add") ? `
-      <form id="staffForm" class="form-grid" style="grid-template-columns:1fr 1fr;">
-        <div class="field"><label>الاسم الظاهر</label><input type="text" name="displayName" required></div>
-        <div class="field"><label>اسم المستخدم</label><input type="text" name="username" required></div>
-        <div class="field"><label>كلمة المرور المؤقتة</label><input type="password" name="password" required minlength="6" autocomplete="new-password"></div>
-        <div class="field"><label>الصلاحية</label><select name="role"><option value="موظف">موظف</option><option value="مدير">مدير</option></select></div>
-        <div class="field" style="grid-column:span 2;"><button type="submit" class="btn">إضافة حساب</button></div>
-      </form>` : ""}
-      <div class="table-wrap" style="margin-top:14px;">
-        <table>
-          <thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>كلمة المرور</th><th>الصلاحية</th><th></th></tr></thead>
-          <tbody>
-            ${(DB.staffAccounts||[]).map(a => `
-              <tr>
-                <td>${esc(a.displayName)}</td>
-                <td>${esc(a.username)}</td>
-                <td>${a.firebaseUid ? "مدارة عبر Firebase Authentication" : esc(a.password || "-")}</td>
-                <td>${esc(a.role)}</td>
-                <td>${can("users","delete") ? `<button class="btn sm danger" data-delstaff="${a.id}">حذف</button>` : ""}</td>
-              </tr>`).join("") || `<tr class="empty-row"><td colspan="5">لا توجد حسابات</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>` : ""}
-
     ${can("categories","view") ? `
     <div class="card" style="margin-bottom:18px;">
       <div class="section-title">🏷️ إدارة التصنيفات</div>
@@ -5590,60 +5562,6 @@ function renderSettings() {
     reader.onerror = () => { showToast("⚠️ تعذّر قراءة الملف"); restoreBackupInput.value = ""; };
     reader.readAsText(file);
   });
-
-  const staffForm = document.getElementById("staffForm");
-  if (staffForm) staffForm.addEventListener("submit", async e => {
-    e.preventDefault();
-    if (!can("users","add")) { showToast("⚠️ ليس لديك صلاحية إضافة مستخدمين"); return; }
-    if (!navigator.onLine || !window.MitaliFirebase || !window.MitaliFirebase.authUser()) { showToast("⚠️ يجب الاتصال بالإنترنت وإنشاء الحساب عبر Firebase Authentication"); return; }
-    const fd = new FormData(e.target);
-    const username = String(fd.get("username") || "").trim().toLowerCase();
-    const password = String(fd.get("password") || "");
-    if (!username || !password) { showToast("⚠️ أدخل اسم المستخدم وكلمة المرور المؤقتة"); return; }
-    if (password.length < 6) { showToast("⚠️ كلمة المرور يجب أن تكون 6 أحرف أو أرقام على الأقل"); return; }
-    if ((DB.staffAccounts||[]).some(a => a.username === username)) { showToast("⚠️ اسم المستخدم مستخدم بالفعل"); return; }
-    const role = fd.get("role");
-    try {
-      const credential = await window.MitaliFirebase.createAuthUserForUsername(username, password);
-      const firebaseUid = credential && credential.user && credential.user.uid;
-      if (!firebaseUid) throw new Error("firebase-user-missing");
-      const profile = { id: firebaseUid, displayName: fd.get("displayName"), username, password: "", firebaseUid, role, securityVersion: 1, status: "نشط", createdAt: todayISO(), lastLogin: null, permissions: role === "مدير" ? fullPermissions() : emptyPermissions() };
-      delete profile.id;
-      await window.MitaliFirebase.setUserProfile(firebaseUid, profile);
-      DB.staffAccounts = DB.staffAccounts || [];
-      DB.staffAccounts.push(Object.assign({ id: firebaseUid }, profile, { password: "" }));
-      // لا تُكتب قائمة الحسابات كاملة من المتصفح؛ users يُحدَّث عبر API الإداري فقط.
-      logActivity("إضافة مستخدم وربطه بـ Firebase", "users", null, { username, role, firebaseUid });
-      showToast("تم إنشاء الحساب وربطه بـ Firebase Authentication");
-      route();
-    } catch (error) {
-      console.warn("Firebase staff account creation failed:", error && error.code ? error.code : "creation-error");
-      showToast(error && error.code === "auth/email-already-in-use" ? "⚠️ اسم المستخدم مرتبط بحساب موجود بالفعل" : "⚠️ تعذر إنشاء الحساب في Firebase");
-    }
-  });
-  c.querySelectorAll("[data-delstaff]").forEach(b => b.addEventListener("click", async () => {
-    if (!can("users","delete")) { showToast("⚠️ ليس لديك صلاحية"); return; }
-    if (currentUser && currentUser.id === b.dataset.delstaff) { showToast("⚠️ لا يمكنك حذف حسابك الحالي أثناء تسجيل الدخول به"); return; }
-    const acc = DB.staffAccounts.find(x => x.id === b.dataset.delstaff);
-    if (acc && acc.role === "مدير" && countActiveAdmins(acc.id) === 0) { showToast("⚠️ لا يمكن حذف آخر مدير نشط فى النظام"); return; }
-    if (!confirm("حذف هذا الحساب؟ لن يتمكن صاحبه من تسجيل الدخول بعد الآن.")) return;
-    if (!window.MitaliFirebase?.adminDeleteAccount) { showToast("⚠️ خدمة حذف الحسابات غير متاحة"); return; }
-    const button = b;
-    button.disabled = true;
-    try {
-      const response = await window.MitaliFirebase.adminDeleteAccount(b.dataset.delstaff);
-      if (!response || !response.deleted) throw new Error("invalid-admin-delete-response");
-      DB.staffAccounts = DB.staffAccounts.filter(x => x.id !== b.dataset.delstaff && x.firebaseUid !== b.dataset.delstaff);
-      await cacheLocally("staffAccounts", DB.staffAccounts);
-      await writeSyncBaseline("staffAccounts", DB.staffAccounts);
-      showToast("تم حذف الحساب من Firebase وإلغاء دخوله");
-      route();
-    } catch (error) {
-      console.error("Account deletion failed:", error);
-      button.disabled = false;
-      showToast(`⚠️ ${adminAccountFailureMessage(error, "لم يُحذف الحساب؛ لم تتغير البيانات")}`, 7000);
-    }
-  }));
 
   // ---- إدارة التصنيفات ----
   c.querySelectorAll(".cat-add-form").forEach(form => {
@@ -6154,8 +6072,9 @@ function renderUsersPage() {
               </td>
             </tr>`).join("")}
         </tbody>
-      </table></div>
+      </table>      </div>
     </div>
+    <div id="usersPermissionsPanel"></div>
   `;
 
   const form = document.getElementById("userForm");
@@ -6339,84 +6258,96 @@ function renderUsersPage() {
     }
   }));
 
+  renderPermissionsPanel(document.getElementById("usersPermissionsPanel"), DB.staffAccounts || []);
 }
 
 // ======================================================================
-// صفحة إدارة الصلاحيات
+// لوحة الصلاحيات المدمجة داخل صفحة المستخدمين
 // ======================================================================
-function renderPermissionsPage() {
-  refreshAccountsFromAdminApi(true);
-  const c = document.getElementById("content");
-  const accounts = DB.staffAccounts || [];
-  if (!state.permUserId && accounts.length) state.permUserId = accounts[0].id;
-  const target = accounts.find(a => a.id === state.permUserId) || accounts[0];
-  const isAdminTarget = target && target.role === "مدير";
-  c.innerHTML = `
-    <div class="two-col">
-      <div class="card">
-        <div class="section-title">المستخدمون</div>
-        <div style="max-height:480px; overflow-y:auto;">
-          ${accounts.map(a => `
-            <div class="doctor-chip" data-permuser="${a.id}" style="cursor:pointer; ${target && target.id === a.id ? "border-color:var(--navy);" : ""}">
-              <div>
-                <div class="name">${esc(a.displayName)}</div>
-                <div class="meta">${esc(a.username)} · ${esc(a.role)}${a.status === "موقوف" ? " · موقوف" : ""}</div>
-              </div>
-            </div>`).join("") || `<div class="hint">لا يوجد مستخدمون</div>`}
+function renderPermissionsPanel(container, accounts) {
+  if (!container) return;
+  const list = Array.isArray(accounts) ? accounts : [];
+  if (!state.permUserId || !list.some(a => a.id === state.permUserId)) state.permUserId = list[0]?.id || "";
+  const target = list.find(a => a.id === state.permUserId) || list[0];
+  const isAdminTarget = !!target && target.role === "مدير";
+  const refreshing = ADMIN_ACCOUNTS_REFRESH_IN_PROGRESS && navigator.onLine;
+  container.innerHTML = `
+    <div class="card" style="margin-top:18px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <div>
+          <div class="section-title" style="margin-bottom:3px;">🔐 الصلاحيات التفصيلية</div>
+          <div class="hint">اختر مستخدمًا لمراجعة الصفحات والوظائف المتاحة له. المدير يملك جميع الصلاحيات تلقائيًا.</div>
+        </div>
+        <button type="button" class="btn sm ghost" id="refreshUnifiedAccounts">↻ تحديث قائمة المستخدمين</button>
+      </div>
+      ${refreshing ? `<div class="sync-inline-note" style="margin-top:10px;">⟳ جارٍ التحقق من أحدث الحسابات من Firebase...</div>` : ""}
+      <div class="two-col" style="margin-top:14px; align-items:start;">
+        <div>
+          <div class="section-title" style="font-size:14px;">الحسابات <span class="hint">${list.length}</span></div>
+          <div style="max-height:420px; overflow-y:auto; display:grid; gap:7px;">
+            ${list.map(a => `
+              <button type="button" class="doctor-chip" data-unified-permuser="${esc(a.id)}" style="cursor:pointer; text-align:right; width:100%; border-color:${target && target.id === a.id ? "var(--navy)" : "var(--line)"};">
+                <span style="display:block; font-weight:800;">${esc(a.displayName || "بدون اسم")}</span>
+                <span class="meta" style="display:block; margin-top:3px;">اسم المستخدم: ${esc(a.username || "غير مسجل")} · ${esc(a.role || "موظف")}${a.status === "موقوف" ? " · موقوف" : ""}</span>
+              </button>`).join("") || `<div class="hint" style="padding:14px 0;">لا توجد حسابات في مصدر الحقيقة users.</div>`}
+          </div>
+        </div>
+        <div>
+          <div class="section-title" style="font-size:14px;">صلاحيات: ${target ? `${esc(target.displayName || "بدون اسم")} <span class="hint">(${esc(target.username || "غير مسجل")})</span>` : "-"}</div>
+          ${target ? `
+          <form id="unifiedPermForm">
+            ${PERMISSION_MODULES.map(m => `
+              <div style="margin-bottom:12px; padding:10px 0; border-bottom:1px solid var(--line);">
+                <div style="font-weight:800; font-size:13px; color:var(--navy); margin-bottom:8px;">${m.label}</div>
+                <div style="display:flex; flex-wrap:wrap; gap:12px;">
+                  ${m.actions.map(a => `<label style="display:flex; align-items:center; gap:6px; font-size:12.5px; cursor:pointer;"><input type="checkbox" name="${m.key}.${a.key}" ${isAdminTarget || (target.permissions && target.permissions[m.key] && target.permissions[m.key][a.key]) ? "checked" : ""} ${isAdminTarget ? "disabled" : ""}>${a.label}</label>`).join("")}
+                </div>
+              </div>`).join("")}
+            ${isAdminTarget ? `<div class="hint">صلاحيات المدير كاملة ولا تحتاج إلى حفظ يدوي.</div>` : `<button type="submit" class="btn">حفظ الصلاحيات</button>`}
+          </form>` : `<div class="hint">أنشئ مستخدمًا أو انتظر تحميل الحسابات من Firebase.</div>`}
         </div>
       </div>
-      <div class="card">
-        <div class="section-title">صلاحيات: ${target ? esc(target.displayName) : "-"}
-          ${isAdminTarget ? `<span class="hint">مدير النظام — يملك كل الصلاحيات دائمًا</span>` : ""}
-        </div>
-        ${target ? `
-        <form id="permForm">
-          ${PERMISSION_MODULES.map(m => `
-            <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
-              <div style="font-weight:800; font-size:13px; color:var(--navy); margin-bottom:8px;">${m.label}</div>
-              <div style="display:flex; flex-wrap:wrap; gap:14px;">
-                ${m.actions.map(a => `
-                  <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; cursor:pointer;">
-                    <input type="checkbox" name="${m.key}.${a.key}" ${isAdminTarget || (target.permissions && target.permissions[m.key] && target.permissions[m.key][a.key]) ? "checked" : ""} ${isAdminTarget ? "disabled" : ""}>
-                    ${a.label}
-                  </label>`).join("")}
-              </div>
-            </div>`).join("")}
-          ${!isAdminTarget ? `<button type="submit" class="btn">حفظ الصلاحيات</button>` : ""}
-        </form>` : ""}
-      </div>
-    </div>
-  `;
-  c.querySelectorAll("[data-permuser]").forEach(row => row.addEventListener("click", () => { state.permUserId = row.dataset.permuser; route(); }));
-  const form = document.getElementById("permForm");
+    </div>`;
+  container.querySelectorAll("[data-unified-permuser]").forEach(row => row.addEventListener("click", () => { state.permUserId = row.dataset.unifiedPermuser; renderUsersPage(); }));
+  const refreshButton = container.querySelector("#refreshUnifiedAccounts");
+  if (refreshButton) refreshButton.addEventListener("click", async () => {
+    refreshButton.disabled = true; refreshButton.textContent = "جارٍ التحديث...";
+    await refreshAccountsFromAdminApi(true);
+    if (!ADMIN_ACCOUNTS_REFRESH_IN_PROGRESS) renderUsersPage();
+  });
+  const form = container.querySelector("#unifiedPermForm");
   if (form) form.addEventListener("submit", async e => {
     e.preventDefault();
     if (!can("users", "editPerms")) { showToast("⚠️ ليس لديك صلاحية تعديل الصلاحيات"); return; }
-    const t = accounts.find(a => a.id === state.permUserId);
-    if (!t || t.role === "مدير") return;
+    const selected = list.find(a => a.id === state.permUserId);
+    if (!selected || selected.role === "مدير") return;
     const perms = emptyPermissions();
-    PERMISSION_MODULES.forEach(m => m.actions.forEach(a => {
-      perms[m.key][a.key] = form.querySelector(`[name="${m.key}.${a.key}"]`).checked;
-    }));
-    if (!t.firebaseUid || !window.MitaliFirebase || !window.MitaliFirebase.adminUpdateAccount) { showToast("⚠️ الحساب غير مرتبط بخدمة المصادقة الآمنة"); return; }
-    const btn = form.querySelector('button[type="submit"]');
-    if (btn) { btn.disabled = true; btn.textContent = "جارٍ الحفظ على الخادم..."; }
+    PERMISSION_MODULES.forEach(m => m.actions.forEach(a => { perms[m.key][a.key] = !!form.querySelector(`[name="${m.key}.${a.key}"]`)?.checked; }));
+    if (!selected.firebaseUid || !window.MitaliFirebase?.adminUpdateAccount) { showToast("⚠️ الحساب غير مرتبط بخدمة المصادقة الآمنة"); return; }
+    const button = form.querySelector('button[type="submit"]');
+    if (button) { button.disabled = true; button.textContent = "جارٍ الحفظ على الخادم..."; }
     try {
-      const response = await window.MitaliFirebase.adminUpdateAccount({ uid: t.firebaseUid, displayName: t.displayName, username: t.username, role: t.role, status: t.status || "نشط", permissions: perms }, "permissions");
+      const response = await window.MitaliFirebase.adminUpdateAccount({ uid: selected.firebaseUid, displayName: selected.displayName, username: selected.username, role: selected.role, status: selected.status || "نشط", permissions: perms }, "permissions");
       const updated = response && response.account; if (!updated) throw new Error("invalid-admin-api-response");
-      const index = DB.staffAccounts.findIndex(x => x.id === t.id); if (index >= 0) DB.staffAccounts[index] = Object.assign({}, DB.staffAccounts[index], updated);
+      const index = DB.staffAccounts.findIndex(x => x.id === selected.id); if (index >= 0) DB.staffAccounts[index] = Object.assign({}, DB.staffAccounts[index], updated);
       await cacheLocally("staffAccounts", DB.staffAccounts); await writeSyncBaseline("staffAccounts", DB.staffAccounts);
-      // اقرأ النسخة التي أكدها API قبل إعادة الرسم، حتى لا تعيد realtime أو
-      // كاش جهاز آخر صلاحيات قديمة مباشرة بعد ظهور رسالة النجاح.
-      try { await refreshAccountsFromAdminApi(false); } catch (refreshError) { console.warn("Fresh permissions list unavailable:", refreshError); }
-      logActivity("تعديل صلاحيات مستخدم وإلغاء اعتماد الأجهزة", "permissions", null, t.displayName);
-      showToast("تم حفظ الصلاحيات على Firestore وإلغاء الاعتمادات القديمة"); route();
+      await refreshAccountsFromAdminApi(false);
+      logActivity("تعديل صلاحيات مستخدم وإلغاء اعتماد الأجهزة", "permissions", null, selected.displayName);
+      showToast("تم حفظ الصلاحيات على Firestore وإلغاء الاعتمادات القديمة");
+      renderUsersPage();
     } catch (err) {
-      console.error(err); if (btn) { btn.disabled = false; btn.textContent = "حفظ الصلاحيات"; }
+      console.error("Unified permissions save failed:", err);
+      if (button) { button.disabled = false; button.textContent = "حفظ الصلاحيات"; }
       showToast(`⚠️ ${adminAccountFailureMessage(err, "لم تُحفظ الصلاحيات؛ لم يتغير وصول المستخدم")}`, 7000);
     }
   });
 }
+
+// ======================================================================
+// توافق الروابط القديمة
+// ======================================================================
+function renderPermissionsPage() { renderUsersPage(); }
+
 
 // ======================================================================
 // صفحة سجل النشاط (Audit Log)
