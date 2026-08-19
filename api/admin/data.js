@@ -2,10 +2,11 @@ const crypto = require('crypto');
 const { getAdmin, requireManager } = require('../_lib/firebase-admin');
 
 const CONFIRMATION_PHRASE = 'حذف كل بيانات المستشفى';
+// الحذف السحابي التجاري يقتصر على ملفات المرضى/الزيارات والوارد والمنصرف.
+// لا نضع doctors أو employees أو categories أو specialties أو settings أو users هنا.
 const WIPE_COLLECTIONS = [
-  'doctors', 'employees',
   'visits_clinic', 'visits_dental', 'visits_operations', 'visits_labs', 'visits_radiology',
-  'income', 'expense', 'payroll', 'lab_expenses', 'categories', 'specialties', 'settings', 'audit_log',
+  'income', 'expense', 'lab_expenses',
 ];
 const CONTROL_COLLECTION = 'system_control';
 const CONTROL_DOCUMENT = 'app';
@@ -72,11 +73,15 @@ async function wipeBusinessData(api) {
   const wipedAt = new Date().toISOString();
   await api.firestore().collection(CONTROL_COLLECTION).doc(CONTROL_DOCUMENT).set({
     lastWipeId: wipeId,
+    wipeScope: 'business',
     wipedAt,
     preserveAccounts: true,
+    preserveSettings: true,
+    preserveDoctors: true,
+    preserveEmployees: true,
     deletedCollections: WIPE_COLLECTIONS,
   }, { merge: false });
-  return { wipeId, wipedAt, totalDeleted: total, deleted };
+  return { wipeId, wipeScope: 'business', wipedAt, totalDeleted: total, deleted };
 }
 
 module.exports = async function handler(req, res) {
@@ -91,7 +96,7 @@ module.exports = async function handler(req, res) {
       return json(res, 400, { error: 'confirmation-required', requiredPhrase: CONFIRMATION_PHRASE });
     }
     const result = await wipeBusinessData(api);
-    return json(res, 200, { ok: true, ...result, preserveAccounts: true });
+    return json(res, 200, { ok: true, ...result, preserveAccounts: true, preserveSettings: true, preserveDoctors: true, preserveEmployees: true });
   } catch (error) {
     const info = normalizedError(error);
     console.error('data-wipe-error', JSON.stringify({ code: String(error && error.code || ''), message: String(error && error.message || '').slice(0, 240), normalized: info.code }));

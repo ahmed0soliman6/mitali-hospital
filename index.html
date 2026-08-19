@@ -708,48 +708,74 @@ const LOCAL_DATA_KEYS_TO_CLEAR = [
   "doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology",
   "income", "expense", "payroll", "settings", "categories", "specialties", "auditLog", "labExpenses",
 ];
+const CLOUD_BUSINESS_KEYS_TO_CLEAR = [
+  "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense",
+];
+const DEFAULT_SETTINGS_AFTER_WIPE = {
+  openingBalance: 0,
+  idleTimeoutMinutes: 5,
+  xrayTypes: ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار"],
+  labTestTypes: ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد"],
+};
 
 async function clearLocalHospitalData(options = {}) {
+  const businessOnly = options.scope === "business";
+  const keysToClear = businessOnly ? CLOUD_BUSINESS_KEYS_TO_CLEAR : LOCAL_DATA_KEYS_TO_CLEAR;
+  const clearSet = new Set(keysToClear);
   await initIDB();
   if (IDB_OK) {
-    const keys = await idbGetAllKeys(IDB_STORE_DATA);
-    for (const key of (keys || [])) {
+    const dataKeys = await idbGetAllKeys(IDB_STORE_DATA);
+    for (const key of (dataKeys || [])) {
       const name = String(key);
-      if (name !== "staffAccounts" && name !== "staffAccounts__base") await idbDeleteKey(IDB_STORE_DATA, key);
+      if (clearSet.has(name) || clearSet.has(name.replace(/__base$/, ""))) await idbDeleteKey(IDB_STORE_DATA, key);
     }
-    await idbRequest(IDB_STORE_QUEUE, "readwrite", store => store.clear());
-    await idbRequest(IDB_STORE_CONFLICTS, "readwrite", store => store.clear());
+    const queueKeys = await idbGetAllKeys(IDB_STORE_QUEUE);
+    for (const key of (queueKeys || [])) if (!businessOnly || clearSet.has(String(key))) await idbDeleteKey(IDB_STORE_QUEUE, key);
+    const conflictKeys = await idbGetAllKeys(IDB_STORE_CONFLICTS);
+    for (const key of (conflictKeys || [])) {
+      const conflict = await idbGet(IDB_STORE_CONFLICTS, key);
+      if (!businessOnly || (conflict && clearSet.has(String(conflict.table)))) await idbDeleteKey(IDB_STORE_CONFLICTS, key);
+    }
   } else {
     try {
       const preserve = new Set([
-        APP_PREFIX + "cache_staffAccounts",
-        APP_PREFIX + "session_user",
-        APP_PREFIX + "trusted_device_v2",
-        APP_PREFIX + "firestore_active",
-        APP_PREFIX + "firestore_migrated",
-        APP_PREFIX + "current_page",
+        APP_PREFIX + "cache_staffAccounts", APP_PREFIX + "session_user", APP_PREFIX + "trusted_device_v2",
+        APP_PREFIX + "firestore_active", APP_PREFIX + "firestore_migrated", APP_PREFIX + "current_page",
         APP_PREFIX + "last_cloud_wipe_id",
       ]);
       const removeKeys = [];
       for (let i = 0; i < localStorage.length; i += 1) {
         const key = localStorage.key(i);
-        if (key && key.startsWith(APP_PREFIX) && !preserve.has(key)) removeKeys.push(key);
+        if (!key || !key.startsWith(APP_PREFIX)) continue;
+        if (!businessOnly && !preserve.has(key)) removeKeys.push(key);
+        if (businessOnly && [...clearSet].some(table => key === APP_PREFIX + "cache_" + table || key === APP_PREFIX + "cache_" + table + "__base")) removeKeys.push(key);
       }
       removeKeys.forEach(key => localStorage.removeItem(key));
     } catch (e) { console.warn("Local storage wipe fallback failed:", e); }
   }
-  LOCAL_DATA_KEYS_TO_CLEAR.forEach(key => {
+  const tombstones = await readSyncTombstones();
+  if (businessOnly) {
+    clearSet.forEach(key => { delete tombstones[key]; });
+    await writeSyncTombstones(tombstones);
+  } else {
+    await writeSyncTombstones({});
+  }
+  keysToClear.forEach(key => {
     if (Array.isArray(DB[key])) DB[key] = [];
   });
-  DB.settings = { openingBalance: 0, idleTimeoutMinutes: 5 };
-  DB.categories = seedCategories();
-  DB.specialties = seedSpecialties();
-  SYNC_QUEUE_KEYS.clear();
-  SYNC_RETRY_BLOCKED_UNTIL = 0;
-  SYNC_RETRY_REASON = "";
-  persistSyncRetryState();
-  try { localStorage.removeItem(SYNC_RETRY_STATE_KEY); } catch (e) { /* ignore */ }
-  PENDING_WRITES = 0;
+  if (!businessOnly) {
+    DB.settings = { ...DEFAULT_SETTINGS_AFTER_WIPE };
+    DB.categories = seedCategories();
+    DB.specialties = seedSpecialties();
+    SYNC_QUEUE_KEYS.clear();
+    SYNC_RETRY_BLOCKED_UNTIL = 0;
+    SYNC_RETRY_REASON = "";
+    persistSyncRetryState();
+    try { localStorage.removeItem(SYNC_RETRY_STATE_KEY); } catch (e) { /* ignore */ }
+    PENDING_WRITES = 0;
+  } else {
+    for (const key of [...SYNC_QUEUE_KEYS]) if (clearSet.has(key)) SYNC_QUEUE_KEYS.delete(key);
+  }
   DATA_VERSION += 1;
   if (options.wipeMarker) {
     try { localStorage.setItem(APP_PREFIX + "last_cloud_wipe_id", String(options.wipeMarker)); } catch (e) { /* ignore */ }
@@ -2165,7 +2191,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.31";
+const APP_VERSION = "v1.3.32";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -5260,8 +5286,8 @@ function renderSettings() {
         </div>
         <div style="border:1px solid color-mix(in srgb, var(--expense) 55%, var(--line)); border-radius:10px; padding:12px;">
           <div style="font-weight:800; margin-bottom:6px;">حذف بيانات المستشفى من السحابة وكل الأجهزة</div>
-          <div class="hint" style="line-height:1.7; margin-bottom:10px;">يمسح بيانات المرضى والزيارات والوارد والمنصرف والأطباء والموظفين والتصنيفات والإعدادات من Firestore، ثم يرسل أمرًا للأجهزة المفتوحة لمسح كاشها. حسابات المستخدمين والمصادقة لا تُحذف.</div>
-          <button class="btn danger sm" id="wipeCloudDataBtn">حذف كل بيانات السحابة والأجهزة</button>
+          <div class="hint" style="line-height:1.7; margin-bottom:10px;">يمسح ملفات المرضى والزيارات والوارد والمنصرف فقط من Firestore، ثم يرسل أمرًا للأجهزة المفتوحة لمسح كاش هذه الملفات. الأطباء والموظفون والتخصصات والتصنيفات والإعدادات والحسابات لا تُحذف.</div>
+          <button class="btn danger sm" id="wipeCloudDataBtn">حذف ملفات المرضى والوارد والمنصرف</button>
         </div>
       </div>
     </div>` : ""}
@@ -5552,7 +5578,7 @@ function renderSettings() {
       showToast("⚠️ توجد تغييرات معلقة. انتظر اكتمال المزامنة قبل الحذف السحابي.", 5000);
       return;
     }
-    if (!confirm("تحذير شديد: سيُحذف نهائيًا من السحابة وكل الأجهزة بيانات المرضى والزيارات والوارد والمنصرف والأطباء والموظفين والتصنيفات والإعدادات. ستبقى حسابات المستخدمين فقط. هل قرأت هذا وتريد المتابعة؟")) return;
+    if (!confirm("تحذير شديد: سيُحذف نهائيًا من السحابة وكل الأجهزة ملفات المرضى والزيارات والوارد والمنصرف فقط. لن تُحذف بيانات الأطباء أو الموظفين أو التخصصات أو التصنيفات أو الإعدادات أو الحسابات. هل قرأت هذا وتريد المتابعة؟")) return;
     const typed = prompt("اكتب العبارة التالية حرفيًا لتأكيد الحذف الشامل:\nحذف كل بيانات المستشفى");
     if (typed !== "حذف كل بيانات المستشفى") { showToast("لم تُنفَّذ العملية: عبارة التأكيد غير صحيحة"); return; }
     if (!confirm("تأكيد أخير ونهائي: لا يمكن التراجع عن حذف السحابة. ابدأ الآن؟")) return;
@@ -5560,15 +5586,15 @@ function renderSettings() {
     wipeCloudDataBtn.textContent = "جارٍ حذف السحابة والأجهزة...";
     try {
       const result = await window.MitaliFirebase.adminWipeBusinessData(typed);
-      await clearLocalHospitalData({ wipeMarker: result.wipeId });
-      showToast(`تم حذف ${fmtInt(result.totalDeleted || 0)} سجل من السحابة وإرسال أمر تنظيف للأجهزة الأخرى. الحسابات محفوظة.`, 7000);
+      await clearLocalHospitalData({ scope: "business", wipeMarker: result.wipeId });
+      showToast(`تم حذف ${fmtInt(result.totalDeleted || 0)} سجل من ملفات المرضى والوارد والمنصرف. الأطباء والموظفون والإعدادات محفوظة.`, 7000);
       route();
     } catch (error) {
       console.error("Cloud data wipe failed:", error);
       showToast(`⚠️ لم يكتمل الحذف السحابي: ${adminAccountFailureMessage(error, "تعذّر تنفيذ الحذف السحابي")}`, 7000);
     } finally {
       wipeCloudDataBtn.disabled = false;
-      wipeCloudDataBtn.textContent = "حذف كل بيانات السحابة والأجهزة";
+      wipeCloudDataBtn.textContent = "حذف ملفات المرضى والوارد والمنصرف";
     }
   });
   const saveIdleTimeoutBtn = document.getElementById("saveIdleTimeout");
@@ -7016,7 +7042,7 @@ async function handleCloudWipeMarker(record) {
   try { applied = String(localStorage.getItem(APP_PREFIX + "last_cloud_wipe_id") || ""); } catch (e) { /* ignore */ }
   if (applied === wipeId) return;
   try {
-    await clearLocalHospitalData({ wipeMarker: wipeId });
+    await clearLocalHospitalData({ scope: "business", wipeMarker: wipeId });
     if (currentUser) {
       showToast("⚠️ نفّذ المدير حذفًا شاملاً للسحابة؛ تم تنظيف بيانات هذا الجهاز مع إبقاء الحساب.", 7000);
       route();

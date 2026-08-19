@@ -67,12 +67,19 @@ async function invoke(handler, body) {
   assert.equal(accepted.status, 200);
   assert.equal(accepted.payload.ok, true);
   assert.equal(accepted.payload.preserveAccounts, true);
-  assert.equal(accepted.payload.totalDeleted, 15);
+  assert.equal(accepted.payload.totalDeleted, 8);
   assert.equal(second.deleted.some((value) => value.startsWith('users/')), false);
   assert.equal(second.deleted.some((value) => value.startsWith('staff_accounts/')), false);
   assert.equal(second.writes.length, 1);
   assert.equal(second.writes[0].collection, 'system_control');
   assert.equal(second.writes[0].id, 'app');
+  assert.equal(accepted.payload.preserveSettings, true);
+  assert.equal(accepted.payload.preserveDoctors, true);
+  assert.equal(accepted.payload.preserveEmployees, true);
+  assert.equal(second.handler.WIPE_COLLECTIONS.includes('doctors'), false);
+  assert.equal(second.handler.WIPE_COLLECTIONS.includes('employees'), false);
+  assert.equal(second.handler.WIPE_COLLECTIONS.includes('settings'), false);
+  assert.equal(second.handler.WIPE_COLLECTIONS.includes('categories'), false);
 
   console.log('PASS data-wipe-api-test: exact confirmation is required, business collections are cleared, and account collections are preserved.');
 })().catch((error) => {
