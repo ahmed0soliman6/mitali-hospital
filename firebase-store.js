@@ -35,7 +35,8 @@
     labExpenses: "lab_expenses",
     categories: "categories",
     specialties: "specialties",
-    settings: "settings"
+    settings: "settings",
+    systemControl: "system_control"
   };
 
   let app = null;
@@ -222,6 +223,25 @@
 
   async function adminDeleteAccount(uid) {
     return adminAccountRequest({ action: 'delete', uid: String(uid || '') });
+  }
+
+  async function adminWipeBusinessData(confirmationText) {
+    init();
+    if (!auth || !auth.currentUser) throw new Error('auth/not-authenticated');
+    const token = await auth.currentUser.getIdToken(true);
+    const response = await fetch(apiUrl('/api/admin/data'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ action: 'wipeBusinessData', confirmationText: String(confirmationText || '') })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(body.error || `data-wipe-${response.status}`);
+      error.code = body.error || `data-wipe-${response.status}`;
+      error.requiredPhrase = body.requiredPhrase || '';
+      throw error;
+    }
+    return body;
   }
 
   async function signOut() {
@@ -426,6 +446,7 @@
     adminUpdateAccount,
     adminListAccounts,
     adminDeleteAccount,
+    adminWipeBusinessData,
     signOut,
     authUser,
     waitForAuth,

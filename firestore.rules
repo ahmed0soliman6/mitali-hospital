@@ -35,6 +35,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /system_control/{document} {
+      allow read: if activeUser();
+      allow write: if false;
+    }
+
     // Basic authenticated access for the first migration stage. Before enabling
     // production writes, tighten these rules per module and role.
     match /{collection}/{document} {
@@ -42,7 +47,8 @@ service cloud.firestore {
         && collection != 'users'
         && collection != 'username_index'
         && collection != 'settings'
-        && collection != 'staff_accounts';
+        && collection != 'staff_accounts'
+        && collection != 'system_control';
     }
 
     match /settings/{document=**} {

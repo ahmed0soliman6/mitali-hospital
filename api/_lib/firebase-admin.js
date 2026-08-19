@@ -74,7 +74,6 @@ function cleanPermissions(value) {
     categories: ['view', 'add', 'edit', 'delete'],
     users: ['view', 'add', 'edit', 'delete', 'editPerms'],
     settings: ['edit', 'backup', 'restore'],
-    demoData: ['view'],
   };
   for (const [module, actions] of Object.entries(modules)) {
     result[module] = {};

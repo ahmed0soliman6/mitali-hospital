@@ -1,7 +1,7 @@
 {
   "name": "mitali-hospital",
   "private": true,
-  "version": "1.3.30",
+  "version": "1.3.31",
   "description": "تطبيق سطح مكتب لإدارة مستشفى ميت على",
   "author": "Mitali Hospital",
   "main": "desktop/main.cjs",
@@ -14,6 +14,8 @@
     "test:security": "node tools/security-auth-tests.js",
     "test:performance": "node tools/store-setvalue-performance-test.js",
     "test:account-delete": "node tools/account-api-delete-test.js",
+    "test:data-wipe": "node tools/data-wipe-api-test.js",
+    "test:income-form": "node tools/income-form-test.js",
     "test:account-permissions": "node tools/account-api-permissions-test.js",
     "test:account-errors": "node tools/account-api-error-test.js",
     "test:read-reduction": "node tools/read-reduction-test.js",
@@ -21,7 +23,7 @@
     "test:sync-outbox": "node tools/sync-outbox-test.js",
     "test:sync-scenarios": "node tools/sync-scenarios-test.js",
     "test:sync-delete": "node tools/sync-delete-propagation-test.js",
-    "test": "npm run check && npm run test:contracts && npm run test:security && npm run test:performance && npm run test:account-delete && npm run test:account-permissions && npm run test:account-errors && npm run test:read-reduction && npm run test:unified-users-page && npm run test:sync-outbox && npm run test:sync-scenarios && npm run test:sync-delete",
+    "test": "npm run check && npm run test:contracts && npm run test:security && npm run test:performance && npm run test:account-delete && npm run test:data-wipe && npm run test:income-form && npm run test:account-permissions && npm run test:account-errors && npm run test:read-reduction && npm run test:unified-users-page && npm run test:sync-outbox && npm run test:sync-scenarios && npm run test:sync-delete",
     "desktop:start": "electron .",
     "desktop:dist": "electron-builder --win nsis --x64 --publish never",
     "desktop:publish": "electron-builder --win nsis --x64 --publish always"

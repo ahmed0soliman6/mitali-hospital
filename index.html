@@ -311,6 +311,8 @@
   .field input:focus, .field select:focus, .field textarea:focus{
     outline:none; border-color:var(--teal); background:var(--card);
   }
+  .income-share-fields{grid-column:1/-1; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px;}
+  @media (max-width:560px){.income-share-fields{grid-template-columns:1fr; gap:9px;}}
   /* تمييز كل الخانات الإلزامية (required) تلقائيًا فى كل نماذج النظام بلون مميز
      (ذهبى) + علامة نجمية بجانب اسم الحقل، بدل الاعتماد على تخمين المستخدم لأي
      الحقول لازم تُملأ قبل الحفظ. لا حاجة لتعديل كل نموذج يدويًا - يعمل تلقائيًا
@@ -535,9 +537,6 @@ const PERMISSION_MODULES = [
   { key: "settings", label: "الإعدادات العامة", actions: [
     { key: "edit", label: "تعديل الإعدادات" }, { key: "backup", label: "النسخ الاحتياطي" }, { key: "restore", label: "استعادة النسخة الاحتياطية" },
   ]},
-  { key: "demoData", label: "البيانات التجريبية للتوضيح", actions: [
-    { key: "view", label: "عرض/إدارة (توليد أو مسح)" },
-  ]},
 ];
 function emptyPermissions() {
   const p = {};
@@ -702,6 +701,61 @@ async function protectRemoteSnapshotFromTombstones(key, remoteValue) {
   const blocked = new Set((Array.isArray(all[key]) ? all[key] : []).map(String));
   if (!blocked.size) return remoteValue;
   return remoteValue.filter(record => record && !blocked.has(String(record.id)));
+}
+
+const LOCAL_WIPE_CONFIRMATION_PHRASE = "حذف بيانات هذا المتصفح فقط";
+const LOCAL_DATA_KEYS_TO_CLEAR = [
+  "doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology",
+  "income", "expense", "payroll", "settings", "categories", "specialties", "auditLog", "labExpenses",
+];
+
+async function clearLocalHospitalData(options = {}) {
+  await initIDB();
+  if (IDB_OK) {
+    const keys = await idbGetAllKeys(IDB_STORE_DATA);
+    for (const key of (keys || [])) {
+      const name = String(key);
+      if (name !== "staffAccounts" && name !== "staffAccounts__base") await idbDeleteKey(IDB_STORE_DATA, key);
+    }
+    await idbRequest(IDB_STORE_QUEUE, "readwrite", store => store.clear());
+    await idbRequest(IDB_STORE_CONFLICTS, "readwrite", store => store.clear());
+  } else {
+    try {
+      const preserve = new Set([
+        APP_PREFIX + "cache_staffAccounts",
+        APP_PREFIX + "session_user",
+        APP_PREFIX + "trusted_device_v2",
+        APP_PREFIX + "firestore_active",
+        APP_PREFIX + "firestore_migrated",
+        APP_PREFIX + "current_page",
+        APP_PREFIX + "last_cloud_wipe_id",
+      ]);
+      const removeKeys = [];
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(APP_PREFIX) && !preserve.has(key)) removeKeys.push(key);
+      }
+      removeKeys.forEach(key => localStorage.removeItem(key));
+    } catch (e) { console.warn("Local storage wipe fallback failed:", e); }
+  }
+  LOCAL_DATA_KEYS_TO_CLEAR.forEach(key => {
+    if (Array.isArray(DB[key])) DB[key] = [];
+  });
+  DB.settings = { openingBalance: 0, idleTimeoutMinutes: 5 };
+  DB.categories = seedCategories();
+  DB.specialties = seedSpecialties();
+  SYNC_QUEUE_KEYS.clear();
+  SYNC_RETRY_BLOCKED_UNTIL = 0;
+  SYNC_RETRY_REASON = "";
+  persistSyncRetryState();
+  try { localStorage.removeItem(SYNC_RETRY_STATE_KEY); } catch (e) { /* ignore */ }
+  PENDING_WRITES = 0;
+  DATA_VERSION += 1;
+  if (options.wipeMarker) {
+    try { localStorage.setItem(APP_PREFIX + "last_cloud_wipe_id", String(options.wipeMarker)); } catch (e) { /* ignore */ }
+  }
+  renderStorageIndicator();
+  return true;
 }
 
 // Outbox دائم محليًا: IDB_STORE_QUEUE كان مُعرّفًا منذ الإصدار السابق، لكن لم
@@ -1393,7 +1447,7 @@ async function loadAll(options = {}) {
     readTable("income", null),
     readTable("expense", null),
     readTable("payroll", null),
-    readTable("settings", { openingBalance: 10000 }),
+    readTable("settings", { openingBalance: 0 }),
     readTable("staffAccounts", null),
     readTable("categories", null),
     readTable("specialties", null),
@@ -1403,17 +1457,19 @@ async function loadAll(options = {}) {
 
   const isFirstRun = !doctorsRaw || doctorsRaw.length === 0;
   const or = (val, fallback) => (val && val.length) ? val : fallback;
-  DB.doctors = or(doctorsRaw, seedDoctors());
-  DB.employees = or(employeesRaw, seedEmployees());
-  DB.visitsClinic = or(visitsClinicRaw, isFirstRun ? seedVisitsClinic(DB.doctors) : []);
-  DB.visitsDental = or(visitsDentalRaw, isFirstRun ? seedVisitsDental(DB.doctors) : []);
+  // التشغيل الأول يبدأ فارغًا؛ البيانات التجريبية لا تُنشأ تلقائيًا حتى لا تعود
+  // بعد مسحها. يمكن للمدير توليدها يدويًا من بطاقة البيانات التجريبية إن احتاج.
+  DB.doctors = or(doctorsRaw, []);
+  DB.employees = or(employeesRaw, []);
+  DB.visitsClinic = or(visitsClinicRaw, []);
+  DB.visitsDental = or(visitsDentalRaw, []);
   DB.visitsOperations = or(visitsOperationsRaw, []);
   DB.visitsLabs = or(visitsLabsRaw, []);
   DB.visitsRadiology = or(visitsRadiologyRaw, []);
-  DB.income = or(incomeRaw, isFirstRun ? seedIncome() : []);
-  DB.expense = or(expenseRaw, isFirstRun ? seedExpense() : []);
-  DB.payroll = or(payrollRaw, isFirstRun ? seedPayroll(DB.doctors, DB.employees) : []);
-  DB.settings = settingsRaw || { openingBalance: 10000 };
+  DB.income = or(incomeRaw, []);
+  DB.expense = or(expenseRaw, []);
+  DB.payroll = or(payrollRaw, []);
+  DB.settings = settingsRaw || { openingBalance: 0 };
   // مهلة الإغلاق التلقائى بعد عدم الاستخدام (بالدقائق) - افتراضيًا 5 دقائق، ويمكن للمدير
   // تعديلها أو تعطيلها (0) من صفحة الإعدادات. لا نُعيد ضبطها هنا إن كانت محفوظة مسبقًا حتى
   // لو كانت صفرًا (معطّلة) حتى نحترم اختيار المدير.
@@ -1500,11 +1556,11 @@ const PAGE_DATA_KEYS = {
 const PAGE_DATA_LOADING = new Map();
 const PAGE_DATA_LOADED_AT = Object.create(null);
 function readFallbackForKey(key) {
-  if (key === "settings") return DB.settings || { openingBalance: 10000 };
+  if (key === "settings") return DB.settings || { openingBalance: 0 };
   if (key === "categories") return DB.categories || seedCategories();
   if (key === "specialties") return DB.specialties || seedSpecialties();
-  if (key === "doctors") return Array.isArray(DB.doctors) && DB.doctors.length ? DB.doctors : seedDoctors();
-  if (key === "employees") return Array.isArray(DB.employees) && DB.employees.length ? DB.employees : seedEmployees();
+  if (key === "doctors") return Array.isArray(DB.doctors) ? DB.doctors : [];
+  if (key === "employees") return Array.isArray(DB.employees) ? DB.employees : [];
   if (key === "staffAccounts") return Array.isArray(DB.staffAccounts) ? DB.staffAccounts : [];
   return Array.isArray(DB[key]) ? DB[key] : [];
 }
@@ -2109,7 +2165,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.30";
+const APP_VERSION = "v1.3.31";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -4223,24 +4279,14 @@ function renderMoneyPage(kind) {
     ${(editing ? canEdit : canAdd) ? `
     <div class="card" style="margin-bottom:18px;">
       <div class="section-title">${editing ? "تعديل عملية" : `تسجيل عملية ${isIncome ? "تحصيل" : "صرف"} جديدة`}</div>
-      <form id="moneyForm" class="form-grid">
+      <form id="moneyForm" class="form-grid ${isIncome ? "income-money-form" : ""}">
         <div class="field"><label>التاريخ</label><input type="date" name="date" required value="${editing?.date || todayISO()}"></div>
-        <div class="field"><label>${partyLabel}</label><input type="text" name="party" value="${esc(editing?.party)}"></div>
-        <div class="field"><label>التصنيف</label><select name="category">${option(cats, editing?.category)}</select></div>
-        <div class="field" style="grid-column:span 2;"><label>البيان</label><input type="text" name="desc" value="${esc(editing?.desc)}"></div>
-        <div class="field"><label>طريقة الدفع</label><select name="paymentMethod">${option(LISTS.payMethods, editing?.paymentMethod)}</select></div>
         <div class="field"><label>المبلغ</label><input type="text" inputmode="decimal" step="0.01" min="0" name="amount" required value="${editing?.amount ?? ""}"></div>
-        <div class="field"><label>${personLabel}</label><input type="text" name="person" value="${esc(editing?.[isIncome ? "receiver" : "responsible"])}"></div>
         ${(() => {
           if (!isIncome) return "";
-          // إصلاح أمان بيانات: القيود اللى تُنشأ تلقائيًا من سجل زيارة (receiptNo
-          // يبدأ بـ V-) يجب ألا يُسمح بربطها يدويًا بطبيب عبر هذا الحقل - لأن
-          // مبلغها بالفعل محتسَب ضمن إيراد الطبيب من الزيارة نفسها، وربطها بطبيب
-          // هنا كذلك كان سيؤدى لاحتساب نفس المبلغ مرتين فى كل تقارير الأطباء
-          // ولوحة القيادة وتسوية حساب الأطباء.
           const isAutoLinkedVisit = editing && editing.receiptNo && String(editing.receiptNo).startsWith("V-");
           if (isAutoLinkedVisit) {
-            return `<div class="field" style="grid-column:span 2;"><label>طبيب</label><div class="hint" style="padding:9px 11px; border:1.5px dashed var(--border,#ccc); border-radius:9px;">هذا القيد أُنشئ تلقائيًا من سجل زيارة مريض - لتغيير الطبيب المرتبط به عدّل الزيارة نفسها من صفحة يومية العيادات/الأسنان.</div></div>`;
+            return `<div class="field" style="grid-column:span 2;"><label>طبيب</label><div class="hint" style="padding:9px 11px; border:1.5px dashed var(--border,#ccc); border-radius:9px;">هذا القيد أُنشئ تلقائيًا من سجل زيارة مريض؛ لتغيير الطبيب عدّل الزيارة من يومية العيادات/الأسنان.</div></div>`;
           }
           return `
         <div class="field" style="grid-column:span 2;">
@@ -4255,12 +4301,17 @@ function renderMoneyPage(kind) {
           </select>
         </div>
         <div class="field" id="incomeShareTip" style="grid-column:1/-1; display:none; font-size:12.5px; color:var(--muted); background:var(--income-soft); padding:8px 12px; border-radius:8px;"></div>
-        <div class="field" id="manualShareFields" style="grid-column:1/-1; display:none; gap:10px;">
-          <div style="flex:1;"><label>حصة الطبيب من هذا المبلغ (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="docShare" id="incomeDocShareInput" value="${editing?.docShare ?? ""}"></div>
-          <div style="flex:1;"><label>حصة المجمع من هذا المبلغ (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="clinicShare" id="incomeClinicShareInput" value="${editing?.clinicShare ?? ""}"></div>
+        <div class="income-share-fields" id="manualShareFields" style="display:none;">
+          <div class="field"><label>حصة الطبيب من هذا المبلغ (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="docShare" id="incomeDocShareInput" value="${editing?.docShare ?? ""}"></div>
+          <div class="field"><label>حصة المجمع من هذا المبلغ (ج.م)</label><input type="text" inputmode="decimal" step="0.01" min="0" name="clinicShare" id="incomeClinicShareInput" value="${editing?.clinicShare ?? ""}"></div>
         </div>
         <div class="hint" id="incomeShareSumHint" style="grid-column:1/-1; display:none;"></div>`;
         })()}
+        <div class="field"><label>${partyLabel}</label><input type="text" name="party" value="${esc(editing?.party)}"></div>
+        <div class="field"><label>التصنيف</label><select name="category">${option(cats, editing?.category)}</select></div>
+        <div class="field" style="grid-column:span 2;"><label>البيان</label><input type="text" name="desc" value="${esc(editing?.desc)}"></div>
+        <div class="field"><label>طريقة الدفع</label><select name="paymentMethod">${option(LISTS.payMethods, editing?.paymentMethod)}</select></div>
+        <div class="field"><label>${personLabel}</label><input type="text" name="person" value="${esc(editing?.[isIncome ? "receiver" : "responsible"])}"></div>
         <div class="field" style="grid-column:span 2;"><label>ملاحظات</label><input type="text" name="notes" value="${esc(editing?.notes)}"></div>
         <div class="field" style="align-self:end; display:flex; gap:8px;">
           <button type="submit" class="btn ${isIncome ? "" : "danger"}">${editing ? "حفظ التعديل" : "تسجيل العملية"}</button>
@@ -4315,6 +4366,7 @@ function renderMoneyPage(kind) {
     // على علمه الفعلى بعدد الكشوفات والمتابعات المكوِّنة لهذا التحصيل اليومي
     // المجمَّع - وهما اللي تُحفَظان فعليًا وتُستخدَمان فى كل التقارير (بدل التخمين
     // التلقائي)، مع تحقق يمنع الحفظ لو مجموعهما لا يساوي المبلغ الإجمالي بالضبط.
+    let lastEditedShare = "";
     const updateShareTip = () => {
       const opt = incomeDoctorSelect.selectedOptions[0];
       const amountInput = moneyForm.querySelector('[name="amount"]');
@@ -4327,17 +4379,22 @@ function renderMoneyPage(kind) {
       }
       const mode = opt.dataset.feeMode || "percent";
       incomeShareTip.style.display = "block";
-      if (manualShareFields) manualShareFields.style.display = "flex";
+      if (manualShareFields) manualShareFields.style.display = "grid";
       const docPct = Number(opt.dataset.docPct) || 0, clinicPct = Number(opt.dataset.clinicPct) || 0;
-      // تعبئة مبدئية (اقتراح فقط) - يمكن للمستخدم تعديلها يدويًا قبل الحفظ
-      if (incomeDocShareInput && incomeDocShareInput.value === "") incomeDocShareInput.value = mode === "percent" ? (amount * docPct).toFixed(2) : "";
-      if (incomeClinicShareInput && incomeClinicShareInput.value === "") incomeClinicShareInput.value = mode === "percent" ? (amount * clinicPct).toFixed(2) : amount.toFixed(2);
+      // تعبئة تلقائية متوازنة: مجموع الحصتين يساوي المبلغ دائمًا.
+      if (incomeDocShareInput && incomeDocShareInput.value === "") {
+        const initialDoctorShare = mode === "percent" ? Math.round(amount * docPct * 100) / 100 : 0;
+        incomeDocShareInput.value = initialDoctorShare.toFixed(2);
+      }
+      if (incomeClinicShareInput && incomeClinicShareInput.value === "") {
+        incomeClinicShareInput.value = Math.max(0, amount - (Number(incomeDocShareInput?.value) || 0)).toFixed(2);
+      }
       if (mode === "fixed_visit") {
-        incomeShareTip.innerHTML = `⚠️ هذا الطبيب على نظام "مبلغ ثابت لكل زيارة" (كشف/متابعة) - النظام لا يقدر يقسّم إجمالى مبلغ مجمّع تلقائيًا بدقة. <strong>الأفضل تسجيل زيارات هذا الطبيب فرديًا</strong> من يومية العيادات. أو لو عارف بنفسك تفصيل الكشوفات/المتابعات المكوِّنة لهذا المبلغ، ادخل حصة الطبيب وحصة المجمع يدويًا تحت.`;
+        incomeShareTip.innerHTML = `هذا الطبيب على مبلغ ثابت لكل زيارة؛ يبدأ النظام بكامل المبلغ للمجمع، ويمكنك تعديل حصة الطبيب أو المجمع ليحسب الطرف الآخر تلقائيًا.`;
       } else if (mode === "fixed_daily") {
-        incomeShareTip.innerHTML = `ℹ️ هذا الطبيب على نظام "أجر يومي ثابت" - افتراضيًا كل المبلغ للمجمع (وأجر الطبيب يُسجَّل منفصلًا من صفحة المرتبات)، لكن يمكنك تعديل الخانتين تحت لو أردت توزيعًا مختلفًا لهذا القيد تحديدًا.`;
+        incomeShareTip.innerHTML = `هذا الطبيب على نظام أجر يومي ثابت؛ يبدأ النظام بكامل المبلغ للمجمع، ويمكنك تعديل إحدى الحصتين ليحسب الطرف الآخر تلقائيًا.`;
       } else {
-        incomeShareTip.innerHTML = `📊 القيمة المقترحة تلقائيًا حسب نسبة الطبيب (${pctDisplay(docPct * 100)}% / ${pctDisplay(clinicPct * 100)}%) - يمكنك تعديلها يدويًا تحت لو أردت. <strong>تنبيه:</strong> لا تسجّل هذا القيد لو سجّلت بالفعل زيارات المرضى فرديًا لنفس اليوم لهذا الطبيب، تفاديًا لازدواج الاحتساب.`;
+        incomeShareTip.innerHTML = `تُحسب الحصتان تلقائيًا بنسبة الطبيب ${pctDisplay(docPct * 100)}% ونسبة المجمع ${pctDisplay(clinicPct * 100)}%. عند تعديل حصة أحدهما يحسب النظام الحصة الأخرى من باقي الإجمالي.`;
       }
       updateShareSumHint();
     };
@@ -4350,10 +4407,23 @@ function renderMoneyPage(kind) {
       incomeShareSumHint.textContent = `مجموع الحصتين: ${fmt(docShare + clinicShare)} ج.م من إجمالى ${fmt(amount)} ج.م${ok ? " ✅" : " — يجب أن يساوي المبلغ الإجمالى بالضبط"}`;
       incomeShareSumHint.style.color = ok ? "var(--income, #1a7f37)" : "var(--expense, #c0392b)";
     }
-    incomeDoctorSelect.addEventListener("change", updateShareTip);
-    moneyForm.querySelector('[name="amount"]')?.addEventListener("input", updateShareTip);
-    incomeDocShareInput?.addEventListener("input", updateShareSumHint);
-    incomeClinicShareInput?.addEventListener("input", updateShareSumHint);
+    const syncRemainingShare = (source) => {
+      const amount = Math.max(0, Number(moneyForm.querySelector('[name="amount"]')?.value) || 0);
+      if (source === "doctor" && incomeDocShareInput && incomeClinicShareInput) {
+        incomeClinicShareInput.value = Math.max(0, amount - (Number(incomeDocShareInput.value) || 0)).toFixed(2);
+      } else if (source === "clinic" && incomeDocShareInput && incomeClinicShareInput) {
+        incomeDocShareInput.value = Math.max(0, amount - (Number(incomeClinicShareInput.value) || 0)).toFixed(2);
+      } else if (source === "amount" && lastEditedShare === "doctor" && incomeDocShareInput && incomeClinicShareInput) {
+        incomeClinicShareInput.value = Math.max(0, amount - (Number(incomeDocShareInput.value) || 0)).toFixed(2);
+      } else if (source === "amount" && lastEditedShare === "clinic" && incomeDocShareInput && incomeClinicShareInput) {
+        incomeDocShareInput.value = Math.max(0, amount - (Number(incomeClinicShareInput.value) || 0)).toFixed(2);
+      }
+      updateShareSumHint();
+    };
+    incomeDoctorSelect.addEventListener("change", () => { lastEditedShare = ""; updateShareTip(); });
+    moneyForm.querySelector('[name="amount"]')?.addEventListener("input", () => { syncRemainingShare("amount"); updateShareTip(); });
+    incomeDocShareInput?.addEventListener("input", () => { lastEditedShare = "doctor"; syncRemainingShare("doctor"); });
+    incomeClinicShareInput?.addEventListener("input", () => { lastEditedShare = "clinic"; syncRemainingShare("clinic"); });
     updateShareTip();
   }
   if (moneyForm) moneyForm.addEventListener("submit", async e => {
@@ -4375,7 +4445,7 @@ function renderMoneyPage(kind) {
         // القيد تحديدًا (بدل تخمين تلقائي)، بعد التحقق من أن مجموعهما يساوي
         // المبلغ الإجمالى بالضبط - وإلا يضيع جزء من المبلغ أو يتكرر حسابه.
         const docShare = Number(fd.get("docShare")) || 0, clinicShare = Number(fd.get("clinicShare")) || 0;
-        if (Math.abs(docShare + clinicShare - rec.amount) > 0.01) {
+        if (docShare < 0 || clinicShare < 0 || Math.abs(docShare + clinicShare - rec.amount) > 0.01) {
           showToast(`⚠️ مجموع حصة الطبيب وحصة المجمع (${fmt(docShare + clinicShare)}) لا يساوي المبلغ الإجمالى (${fmt(rec.amount)}) - صحّح الرقمين قبل الحفظ`);
           return;
         }
@@ -5178,15 +5248,21 @@ function renderSettings() {
         <button class="btn" id="saveAdminRecoveryBtn" style="margin-top:10px;">حفظ رمز الاسترداد</button>
       </div>
     </div>` : ""}
-    ${can("demoData","view") ? `
-    <div class="card" style="margin-bottom:18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-      <div>
-        <div class="section-title" style="margin-bottom:2px;">بيانات تجريبية للتوضيح</div>
-        <div class="hint">الزيارات والوارد والمنصرف المعروضة الآن أمثلة توضيحية — احذفها قبل الاستخدام الفعلي.</div>
-      </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn ghost" id="generateDemo">🧪 توليد بيانات تجريبية (سنة كاملة)</button>
-        <button class="btn danger" id="resetDemo">مسح كل البيانات والبدء من جديد</button>
+    ${isAdminUser() ? `
+    <div class="card destructive-tools-card" style="margin-bottom:18px; border-inline-start:3px solid var(--expense);">
+      <div class="section-title">🧹 حذف البيانات</div>
+      <p class="hint" style="line-height:1.8; margin-bottom:12px;">هذه الأدوات منفصلة عن النسخ الاحتياطي. لا تستخدم الحذف قبل التأكد من وجود نسخة احتياطية، ولا تغلق الصفحة أثناء تنفيذ الحذف السحابي.</p>
+      <div class="two-col" style="grid-template-columns:1fr 1fr; gap:12px;">
+        <div style="border:1px solid var(--line); border-radius:10px; padding:12px;">
+          <div style="font-weight:800; margin-bottom:6px;">حذف بيانات هذا المتصفح فقط</div>
+          <div class="hint" style="line-height:1.7; margin-bottom:10px;">يمسح بيانات العمل المحلية، والكاش، والطابور، وbaseline وtombstones من هذا المتصفح فقط. لا يحذف السحابة ولا الحساب، لكنه يفقد أي تغييرات محلية لم تُرفع بعد.</div>
+          <button class="btn danger sm" id="clearBrowserDataBtn">حذف بيانات المتصفح</button>
+        </div>
+        <div style="border:1px solid color-mix(in srgb, var(--expense) 55%, var(--line)); border-radius:10px; padding:12px;">
+          <div style="font-weight:800; margin-bottom:6px;">حذف بيانات المستشفى من السحابة وكل الأجهزة</div>
+          <div class="hint" style="line-height:1.7; margin-bottom:10px;">يمسح بيانات المرضى والزيارات والوارد والمنصرف والأطباء والموظفين والتصنيفات والإعدادات من Firestore، ثم يرسل أمرًا للأجهزة المفتوحة لمسح كاشها. حسابات المستخدمين والمصادقة لا تُحذف.</div>
+          <button class="btn danger sm" id="wipeCloudDataBtn">حذف كل بيانات السحابة والأجهزة</button>
+        </div>
       </div>
     </div>` : ""}
     ${canSettingsEdit ? `
@@ -5442,43 +5518,58 @@ function renderSettings() {
     } finally { saveAdminRecoveryBtn.disabled = false; saveAdminRecoveryBtn.textContent = "حفظ رمز الاسترداد"; }
   });
 
-  const generateDemoBtn = document.getElementById("generateDemo");
-  if (generateDemoBtn) generateDemoBtn.addEventListener("click", () => {
-    if (!can("demoData","view")) { showToast("⚠️ ليس لديك صلاحية لهذا الإجراء"); return; }
-    DB.visitsClinic = seedVisitsClinic(DB.doctors);
-    DB.visitsDental = seedVisitsDental(DB.doctors);
-    DB.income = seedIncome();
-    DB.expense = seedExpense();
-    DB.payroll = seedPayroll(DB.doctors, DB.employees);
-    DB.visitsClinic.forEach(v => syncVisitIncomeLink(v, "clinic", true));
-    DB.visitsDental.forEach(v => syncVisitIncomeLink(v, "dental", true));
-    ["visitsClinic","visitsDental","income","expense","payroll"].forEach(persist);
-    logActivity("توليد بيانات تجريبية", "settings");
-    showToast("تم توليد بيانات تجريبية لسنة كاملة");
-    route();
-  });
-  const resetDemoBtn = document.getElementById("resetDemo");
-  if (resetDemoBtn) resetDemoBtn.addEventListener("click", async () => {
-    if (!can("demoData","view")) { showToast("⚠️ ليس لديك صلاحية لهذا الإجراء"); return; }
-    if (!confirm("سيتم حذف كل الزيارات وعمليات الوارد والمنصرف والمرتبات نهائيًا (الأطباء والموظفون يبقون). متأكد؟")) return;
-    resetDemoBtn.disabled = true; resetDemoBtn.textContent = "جارٍ الحذف...";
-    DB.visitsClinic = []; DB.visitsDental = []; DB.income = []; DB.expense = []; DB.payroll = [];
-    try {
-      // إصلاح: كانت هذه العمليات تُطلَق كلها معًا (forEach بدون انتظار)، فلو
-      // فشل رفع أحد الجداول (خاصة "الوارد" الذى يحتوى عادة على أكبر عدد سجلات
-      // بعد توليد سنة كاملة من البيانات التجريبية) كان الفشل يمر بصمت والبيانات
-      // القديمة تبقى فى السحابة وتعود بعد أول مزامنة. الآن يُنتظَر كل جدول على
-      // حدة وتُعرَض رسالة واضحة لو فشل أى واحد منها فعليًا (عادة بسبب عدد سجلات
-      // كبير يتجاوز حد الحذف/الرفع دفعة واحدة - وهو ما تم إصلاحه أيضًا فى
-      // pushTableSmart بتقسيم العمليات الكبيرة لدفعات صغيرة).
-      for (const k of ["visitsClinic","visitsDental","income","expense","payroll"]) { await persist(k); }
-      logActivity("مسح البيانات التجريبية", "settings");
-      showToast("تم مسح البيانات التجريبية — النظام جاهز للاستخدام الفعلي");
-    } catch (e) {
-      console.error("Reset demo data failed:", e);
-      showToast(`⚠️ لم يكتمل المسح على السحابة: ${(e && e.message) || e} — البيانات المحلية اتمسحت وستتم إعادة المحاولة تلقائيًا`);
+  const clearBrowserDataBtn = document.getElementById("clearBrowserDataBtn");
+  if (clearBrowserDataBtn) clearBrowserDataBtn.addEventListener("click", async () => {
+    if (!isAdminUser()) { showToast("⚠️ حذف بيانات المتصفح متاح للمدير فقط"); return; }
+    if (PENDING_WRITES > 0 || SYNC_QUEUE_KEYS.size > 0) {
+      showToast("⚠️ توجد تغييرات محلية لم تُرفع بعد. انتظر اكتمال المزامنة قبل حذف بيانات المتصفح.", 5000);
+      return;
     }
-    route();
+    if (!confirm("تحذير نهائي: سيُحذف كاش العمل والطابور وبيانات هذا المتصفح فقط. لا يمكن استعادة تغييرات محلية لم تُرفع. هل تريد المتابعة؟")) return;
+    const typed = prompt(`للتأكيد اكتب العبارة حرفيًا:\n${LOCAL_WIPE_CONFIRMATION_PHRASE}`);
+    if (typed !== LOCAL_WIPE_CONFIRMATION_PHRASE) { showToast("لم تُنفَّذ العملية: عبارة التأكيد غير صحيحة"); return; }
+    if (!confirm("تأكيد أخير: حذف بيانات هذا المتصفح فقط الآن؟")) return;
+    clearBrowserDataBtn.disabled = true;
+    clearBrowserDataBtn.textContent = "جارٍ حذف بيانات المتصفح...";
+    try {
+      await clearLocalHospitalData();
+      showToast("تم حذف بيانات العمل المحلية من هذا المتصفح. الحساب وتسجيل الدخول محفوظان.", 5000);
+      route();
+    } catch (error) {
+      console.error("Browser data wipe failed:", error);
+      showToast("⚠️ تعذّر حذف بيانات المتصفح بالكامل؛ لم تُحذف السحابة.", 5000);
+    } finally {
+      clearBrowserDataBtn.disabled = false;
+      clearBrowserDataBtn.textContent = "حذف بيانات المتصفح";
+    }
+  });
+
+  const wipeCloudDataBtn = document.getElementById("wipeCloudDataBtn");
+  if (wipeCloudDataBtn) wipeCloudDataBtn.addEventListener("click", async () => {
+    if (!isAdminUser()) { showToast("⚠️ الحذف السحابي متاح للمدير فقط"); return; }
+    if (!navigator.onLine || STORAGE_MODE !== "firestore") { showToast("⚠️ يجب الاتصال بالإنترنت لتنفيذ الحذف السحابي"); return; }
+    if (PENDING_WRITES > 0 || SYNC_QUEUE_KEYS.size > 0) {
+      showToast("⚠️ توجد تغييرات معلقة. انتظر اكتمال المزامنة قبل الحذف السحابي.", 5000);
+      return;
+    }
+    if (!confirm("تحذير شديد: سيُحذف نهائيًا من السحابة وكل الأجهزة بيانات المرضى والزيارات والوارد والمنصرف والأطباء والموظفين والتصنيفات والإعدادات. ستبقى حسابات المستخدمين فقط. هل قرأت هذا وتريد المتابعة؟")) return;
+    const typed = prompt("اكتب العبارة التالية حرفيًا لتأكيد الحذف الشامل:\nحذف كل بيانات المستشفى");
+    if (typed !== "حذف كل بيانات المستشفى") { showToast("لم تُنفَّذ العملية: عبارة التأكيد غير صحيحة"); return; }
+    if (!confirm("تأكيد أخير ونهائي: لا يمكن التراجع عن حذف السحابة. ابدأ الآن؟")) return;
+    wipeCloudDataBtn.disabled = true;
+    wipeCloudDataBtn.textContent = "جارٍ حذف السحابة والأجهزة...";
+    try {
+      const result = await window.MitaliFirebase.adminWipeBusinessData(typed);
+      await clearLocalHospitalData({ wipeMarker: result.wipeId });
+      showToast(`تم حذف ${fmtInt(result.totalDeleted || 0)} سجل من السحابة وإرسال أمر تنظيف للأجهزة الأخرى. الحسابات محفوظة.`, 7000);
+      route();
+    } catch (error) {
+      console.error("Cloud data wipe failed:", error);
+      showToast(`⚠️ لم يكتمل الحذف السحابي: ${adminAccountFailureMessage(error, "تعذّر تنفيذ الحذف السحابي")}`, 7000);
+    } finally {
+      wipeCloudDataBtn.disabled = false;
+      wipeCloudDataBtn.textContent = "حذف كل بيانات السحابة والأجهزة";
+    }
   });
   const saveIdleTimeoutBtn = document.getElementById("saveIdleTimeout");
   if (saveIdleTimeoutBtn) saveIdleTimeoutBtn.addEventListener("click", () => {
@@ -6893,6 +6984,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && cu
 // ======================================================================
 const realtimeRefreshInProgress = new Set();
 const firestoreRealtimeUnsubs = new Map();
+let cloudWipeUnsub = null;
 let realtimePageKey = "";
 // تحديث شبه لحظي للجدول المفتوح فقط. لا نراقب users أو كل جداول المستشفى،
 // ونترك بقية البيانات لقراءة الصفحة عند فتحها لتقليل الاستهلاك.
@@ -6910,7 +7002,41 @@ function cleanupRealtimeChannels(reason) {
     try { unsubscribe(); } catch (e) { console.warn("Firestore listener cleanup failed:", reason, e); }
   });
   firestoreRealtimeUnsubs.clear();
+  if (cloudWipeUnsub) {
+    try { cloudWipeUnsub(); } catch (e) { console.warn("Cloud wipe listener cleanup failed:", reason, e); }
+    cloudWipeUnsub = null;
+  }
   realtimePageKey = "";
+}
+
+async function handleCloudWipeMarker(record) {
+  const wipeId = String(record && record.lastWipeId || "");
+  if (!wipeId) return;
+  let applied = "";
+  try { applied = String(localStorage.getItem(APP_PREFIX + "last_cloud_wipe_id") || ""); } catch (e) { /* ignore */ }
+  if (applied === wipeId) return;
+  try {
+    await clearLocalHospitalData({ wipeMarker: wipeId });
+    if (currentUser) {
+      showToast("⚠️ نفّذ المدير حذفًا شاملاً للسحابة؛ تم تنظيف بيانات هذا الجهاز مع إبقاء الحساب.", 7000);
+      route();
+    }
+  } catch (error) {
+    console.error("Cloud wipe marker handling failed:", error);
+    showToast("⚠️ وصل أمر حذف سحابي لكن تعذّر تنظيف كاش هذا الجهاز بالكامل.", 7000);
+  }
+}
+
+function subscribeCloudWipeControl() {
+  if (cloudWipeUnsub || STORAGE_MODE !== "firestore" || !window.MitaliFirebase || !window.MitaliFirebase.authUser()) return;
+  try {
+    cloudWipeUnsub = window.MitaliFirebase.subscribe("systemControl", (changes) => {
+      const marker = [...(Array.isArray(changes) ? changes : [])].reverse().find(change => change && change.record && change.record.lastWipeId);
+      if (marker && marker.type !== "removed") handleCloudWipeMarker(marker.record);
+    }, (error) => console.warn("Cloud wipe control listener error:", error));
+  } catch (error) {
+    console.error("Cloud wipe control listener failed:", error);
+  }
 }
 
 async function refreshTableFromFirestore(key, changes) {
@@ -6967,9 +7093,10 @@ function subscribeFirestoreRealtime(page = state.page) {
   if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase || !window.MitaliFirebase.authUser()) return;
   const keys = Array.isArray(PAGE_REALTIME_KEYS[page]) ? PAGE_REALTIME_KEYS[page] : [];
   const nextPageKey = `${page}:${keys.join(",")}`;
-  if (realtimePageKey === nextPageKey && firestoreRealtimeUnsubs.size) return;
+  if (realtimePageKey === nextPageKey && (firestoreRealtimeUnsubs.size || cloudWipeUnsub)) return;
   cleanupRealtimeChannels("page-change");
   realtimePageKey = nextPageKey;
+  subscribeCloudWipeControl();
   keys.forEach((key) => {
     try {
       const unsubscribe = window.MitaliFirebase.subscribe(key, (changes) => refreshTableFromFirestore(key, changes), (error) => {
