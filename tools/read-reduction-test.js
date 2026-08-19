@@ -2,10 +2,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const index = fs.readFileSync('index.html', 'utf8');
-const realtimeMatch = index.match(/const FIRESTORE_REALTIME_KEYS\s*=\s*\[([^\]]*)\]/);
-assert.ok(realtimeMatch, 'FIRESTORE_REALTIME_KEYS must be declared');
+const realtimeMatch = index.match(/const PAGE_REALTIME_KEYS\s*=\s*\{([\s\S]*?)\n\};/);
+assert.ok(realtimeMatch, 'PAGE_REALTIME_KEYS must be declared');
 assert.doesNotMatch(realtimeMatch[1], /staffAccounts/);
-assert.doesNotMatch(realtimeMatch[1], /visitsClinic|visitsDental|income|expense|payroll|auditLog/);
+assert.match(realtimeMatch[1], /visitsClinic|visitsDental/);
+assert.match(index, /function subscribeFirestoreRealtime\(page = state\.page\)/);
 
 const codeWithoutLineComments = index.replace(/^\s*\/\/.*$/gm, '');
 const loadAllCalls = (codeWithoutLineComments.match(/\bloadAll\s*\(/g) || []).length;
@@ -19,4 +20,4 @@ assert.match(index, /const postLoginKeys = CORE_BOOT_KEYS\.filter\(key => key !=
 const store = fs.readFileSync('firebase-store.js', 'utf8');
 assert.match(store, /function getReadMetrics\(\)/);
 assert.match(store, /recordReadMetric\(key, snap\.docs\.length\)/);
-console.log('PASS read-reduction-test: boot/page loading is demand-driven, realtime is limited, and local read metrics are exposed.');
+console.log('PASS read-reduction-test: boot/page loading is demand-driven, realtime is page-scoped, and local read metrics are exposed.');

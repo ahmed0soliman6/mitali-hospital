@@ -673,6 +673,36 @@ async function readLocalCache(key, fallback) {
 // حذف سجل من المصفوفة المحلية هو حذف مقصود أم مجرد سجل لم يصل بعد من جهاز آخر.
 async function readSyncBaseline(key) { return await readLocalCache(key + "__base", []); }
 async function writeSyncBaseline(key, value) { await cacheLocally(key + "__base", value); }
+// Tombstones تحفظ نية الحذف حتى لو لم يكن السجل موجودًا في baseline المحلي
+// بسبب جهاز قديم أو لقطة سحابية وصلت بعد إنشاء السجل. بدونها كان diff يعتمد
+// على baseline فقط، فيسقط الحذف بينما يستمر رفع الإضافات بشكل طبيعي.
+const SYNC_TOMBSTONES_KEY = APP_PREFIX + "sync_tombstones";
+async function readSyncTombstones() { return await readLocalCache(SYNC_TOMBSTONES_KEY, {}); }
+async function writeSyncTombstones(value) { await cacheLocally(SYNC_TOMBSTONES_KEY, value || {}); }
+async function markSyncTombstone(key, id) {
+  if (!key || id == null) return;
+  const all = await readSyncTombstones();
+  const list = Array.isArray(all[key]) ? all[key].map(String) : [];
+  const sid = String(id);
+  if (!list.includes(sid)) list.push(sid);
+  all[key] = list;
+  await writeSyncTombstones(all);
+}
+async function clearSyncTombstones(key, ids) {
+  if (!key || !Array.isArray(ids) || !ids.length) return;
+  const all = await readSyncTombstones();
+  const remove = new Set(ids.map(String));
+  const keep = (Array.isArray(all[key]) ? all[key] : []).map(String).filter(id => !remove.has(id));
+  if (keep.length) all[key] = keep; else delete all[key];
+  await writeSyncTombstones(all);
+}
+async function protectRemoteSnapshotFromTombstones(key, remoteValue) {
+  if (!Array.isArray(remoteValue)) return remoteValue;
+  const all = await readSyncTombstones();
+  const blocked = new Set((Array.isArray(all[key]) ? all[key] : []).map(String));
+  if (!blocked.size) return remoteValue;
+  return remoteValue.filter(record => record && !blocked.has(String(record.id)));
+}
 
 // Outbox دائم محليًا: IDB_STORE_QUEUE كان مُعرّفًا منذ الإصدار السابق، لكن لم
 // يكن هناك مسار يستخدمه. نحفظ اسم الجدول المتعثر فقط لأن أحدث قيمة كاملة موجودة
@@ -921,7 +951,8 @@ async function storeGet(key, fallback, options = {}) {
       try {
         const remote = await window.MitaliFirebase.getValue(key, fallback, options.requireServer ? { source: "server" } : {});
         if (remote !== undefined && remote !== null) {
-          const safeRemote = Array.isArray(remote) ? mergeRemoteSnapshot(key, remote) : remote;
+          const tombstoneProtectedRemote = Array.isArray(remote) ? await protectRemoteSnapshotFromTombstones(key, remote) : remote;
+          const safeRemote = Array.isArray(tombstoneProtectedRemote) ? mergeRemoteSnapshot(key, tombstoneProtectedRemote) : tombstoneProtectedRemote;
           await cacheLocally(key, safeRemote);
           // إذا كان الجدول داخل outbox، فقد تحتوي safeRemote على سجل محلي
           // محفوظ مؤقتًا لحمايته من لقطة سحابية أقدم. لا نضع هذه اللقطة في
@@ -978,10 +1009,16 @@ async function storeSetInner(key, value) {
         const previous = await readSyncBaseline(key);
         const previousMap = new Map((previous || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
         const nextMap = new Map(value.filter(r => r && r.id != null).map(r => [String(r.id), r]));
+        const tombstones = await readSyncTombstones();
+        const explicitDeleted = (Array.isArray(tombstones[key]) ? tombstones[key] : []).map(String).filter(id => !nextMap.has(id));
         const changed = value.filter(r => r && r.id != null && (!previousMap.has(String(r.id)) || !syncRecordsEqual(key, previousMap.get(String(r.id)), r)));
-        const deleted = (previous || []).filter(r => r && r.id != null && !nextMap.has(String(r.id))).map(r => String(r.id));
+        const deleted = [...new Set([
+          ...(previous || []).filter(r => r && r.id != null && !nextMap.has(String(r.id))).map(r => String(r.id)),
+          ...explicitDeleted,
+        ])];
         if (changed.length) await window.MitaliFirebase.upsertRecords(key, changed);
         if (deleted.length && window.MitaliFirebase.deleteRecords) await window.MitaliFirebase.deleteRecords(key, deleted);
+        if (explicitDeleted.length) await clearSyncTombstones(key, explicitDeleted);
       } else {
         await window.MitaliFirebase.setValue(key, value);
       }
@@ -2072,7 +2109,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.28";
+const APP_VERSION = "v1.3.29";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -2776,6 +2813,7 @@ function route() {
   if ((state.page === "users" || state.page === "permissions") && !isAdminUser()) { renderAccessDenied(); return; }
   if (state.page === "dataConflicts" && !can("settings","edit")) { renderAccessDenied(); return; }
   (renderers[state.page] || renderDashboard)();
+  if (currentUser && STORAGE_MODE === "firestore") subscribeFirestoreRealtime(state.page);
   schedulePageDataLoad(state.page);
 }
 
@@ -3415,12 +3453,14 @@ function renderVisitsPage(kind) {
     if (!confirm(hasLinked ? "هل تريد حذف هذه الزيارة؟ سيتم أيضًا حذف حركة الوارد المرتبطة بها فى دفتر الخزينة." : "هل تريد حذف هذه الزيارة؟")) return;
     try {
       if (hasLinked) {
+        await markSyncTombstone("income", target.linkedIncomeId);
         const idx2 = DB.income.findIndex(x => x.id === target.linkedIncomeId);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
       const idx = list.findIndex(v => v.id === b.dataset.del);
       const removed = idx > -1 ? list[idx] : null;
+      await markSyncTombstone(isDental ? "visitsDental" : "visitsClinic", b.dataset.del);
       if (idx > -1) list.splice(idx, 1);
       logActivity(isDental ? "حذف حالة أسنان" : "حذف زيارة", kind, removed, null);
       await persist(isDental ? "visitsDental" : "visitsClinic");
@@ -3661,12 +3701,14 @@ function renderServiceVisitsPage(kind) {
     if (!confirm(hasLinked ? "هل تريد حذف هذا السجل؟ سيتم أيضًا حذف حركة الوارد المرتبطة به فى دفتر الخزينة." : "هل تريد حذف هذا السجل؟")) return;
     try {
       if (hasLinked) {
+        await markSyncTombstone("income", target.linkedIncomeId);
         const idx2 = DB.income.findIndex(x => x.id === target.linkedIncomeId);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
       const idx = list.findIndex(v => v.id === b.dataset.del);
       const removed = idx > -1 ? list[idx] : null;
+      await markSyncTombstone(cfg.listKey, b.dataset.del);
       if (idx > -1) list.splice(idx, 1);
       logActivity(cfg.deleteAction, kind, removed, null);
       await persist(cfg.listKey);
@@ -6708,6 +6750,7 @@ async function refreshCurrentSessionSecurity() {
 setInterval(refreshCurrentSessionSecurity, 300000);
 
 function renderLogin(errorMsg) {
+  document.body.classList.remove("sidebar-open");
   document.getElementById("sidebar").innerHTML = "";
   document.getElementById("topbar").innerHTML = "";
   const c = document.getElementById("content");
@@ -6867,6 +6910,7 @@ function renderLogin(errorMsg) {
 }
 
 async function logout() {
+  document.body.classList.remove("sidebar-open");
   logActivity("تسجيل خروج", "login");
   cleanupRealtimeChannels("logout");
   if (window.MitaliFirebase && window.MitaliFirebase.authUser()) {
@@ -6918,16 +6962,30 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && cu
 // ======================================================================
 const realtimeRefreshInProgress = new Set();
 const firestoreRealtimeUnsubs = new Map();
-  const FIRESTORE_REALTIME_KEYS = []; // الحسابات تُحدَّث عبر users/API الإداري فقط
+let realtimePageKey = "";
+// تحديث شبه لحظي للجدول المفتوح فقط. لا نراقب users أو كل جداول المستشفى،
+// ونترك بقية البيانات لقراءة الصفحة عند فتحها لتقليل الاستهلاك.
+const PAGE_REALTIME_KEYS = {
+  clinic: ["visitsClinic"], dental: ["visitsDental"],
+  operations: ["visitsOperations"], labs: ["visitsLabs"], radiology: ["visitsRadiology"],
+  income: ["income"], expense: ["expense"], payroll: ["payroll"],
+  patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
+  outstandingBalancesClinic: ["visitsClinic"], outstandingBalancesDental: ["visitsDental"],
+  outstandingBalancesOperations: ["visitsOperations"], outstandingBalancesLabs: ["visitsLabs"],
+  outstandingBalancesRadiology: ["visitsRadiology"]
+};
 function cleanupRealtimeChannels(reason) {
   firestoreRealtimeUnsubs.forEach((unsubscribe) => {
     try { unsubscribe(); } catch (e) { console.warn("Firestore listener cleanup failed:", reason, e); }
   });
   firestoreRealtimeUnsubs.clear();
+  realtimePageKey = "";
 }
 
 async function refreshTableFromFirestore(key, changes) {
   if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase || realtimeRefreshInProgress.has("fs:" + key)) return;
+  // لا تسمح لقطة/حدث خارجي باستبدال تعديل محلي لم يؤكده الخادم.
+  if (PENDING_WRITES > 0 && SYNC_QUEUE_KEYS.has(String(key))) return;
   realtimeRefreshInProgress.add("fs:" + key);
   try {
     let safeFresh;
@@ -6935,9 +6993,12 @@ async function refreshTableFromFirestore(key, changes) {
       safeFresh = await window.MitaliFirebase.getValue(key, DB[key]);
     } else {
       const next = Array.isArray(DB[key]) ? DB[key].slice() : [];
+      const tombstones = await readSyncTombstones();
+      const blocked = new Set((Array.isArray(tombstones[key]) ? tombstones[key] : []).map(String));
       for (const change of (Array.isArray(changes) ? changes : [])) {
         const record = change && change.record;
         if (!record || record.id == null) continue;
+        if (blocked.has(String(record.id)) && change.type !== "removed") continue;
         const index = next.findIndex(item => item && String(item.id) === String(record.id));
         if (change.type === "removed") {
           if (index >= 0) next.splice(index, 1);
@@ -6971,10 +7032,14 @@ async function refreshTableFromFirestore(key, changes) {
   }
 }
 
-function subscribeFirestoreRealtime() {
+function subscribeFirestoreRealtime(page = state.page) {
   if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase || !window.MitaliFirebase.authUser()) return;
-  if (firestoreRealtimeUnsubs.size) return;
-  FIRESTORE_REALTIME_KEYS.forEach((key) => {
+  const keys = Array.isArray(PAGE_REALTIME_KEYS[page]) ? PAGE_REALTIME_KEYS[page] : [];
+  const nextPageKey = `${page}:${keys.join(",")}`;
+  if (realtimePageKey === nextPageKey && firestoreRealtimeUnsubs.size) return;
+  cleanupRealtimeChannels("page-change");
+  realtimePageKey = nextPageKey;
+  keys.forEach((key) => {
     try {
       const unsubscribe = window.MitaliFirebase.subscribe(key, (changes) => refreshTableFromFirestore(key, changes), (error) => {
         console.warn("Firestore listener error for", key, error);
@@ -7003,8 +7068,24 @@ async function boot() {
   }
   currentUser = getSession();
   if (!currentUser) { renderLogin(); return; }
-  // تأكد أن المستخدم لا يزال حسابًا صالحًا (لم يُحذف)
-  const sessionAccount = (DB.staffAccounts || []).find(a => a.id === currentUser.id || (currentUser.username && a.username === currentUser.username));
+  // انتظر استعادة Firebase Auth بعد reload قبل فحص الجلسة؛ currentUser قد يكون
+  // محفوظًا محليًا بينما auth.currentUser لم يُستعد بعد من IndexedDB.
+  if (navigator.onLine && window.MitaliFirebase && window.MitaliFirebase.waitForAuth) {
+    try { await window.MitaliFirebase.waitForAuth(); } catch (authWaitError) { console.warn("Firebase Auth restore wait failed:", authWaitError); }
+  }
+  // لا نعتمد على قائمة staffAccounts المحلية وحدها عند reload. نقرأ ملف المستخدم
+  // الحالي من users مباشرة إذا لم يكن موجودًا في الكاش، ثم نضعه في الكاش دون
+  // إعادة تحميل قائمة الحسابات كاملة.
+  let sessionAccount = (DB.staffAccounts || []).find(a => a.id === currentUser.id || (currentUser.username && a.username === currentUser.username));
+  if (!sessionAccount && currentUser.firebaseUid && window.MitaliFirebase && window.MitaliFirebase.getUserProfile) {
+    try {
+      const authUser = window.MitaliFirebase.authUser();
+      if (authUser && authUser.uid === currentUser.firebaseUid) {
+        sessionAccount = await window.MitaliFirebase.getUserProfile(authUser.uid, { source: navigator.onLine ? "server" : undefined });
+        if (sessionAccount) DB.staffAccounts = [...(DB.staffAccounts || []).filter(a => a.firebaseUid !== sessionAccount.firebaseUid), sessionAccount];
+      }
+    } catch (profileReadError) { console.warn("Current profile restore failed:", profileReadError); }
+  }
   if (!sessionAccount || sessionAccount.status === "موقوف") { clearSession(); renderLogin(); return; }
   if (!(await validateSessionSecurity())) {
     clearSession();

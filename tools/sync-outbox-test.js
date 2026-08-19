@@ -15,10 +15,12 @@ assert.match(index, /const run = prev\.catch\(\(\) => \{\}\)\.then\(\(\) => stor
 assert.match(index, /await markSyncPending\(key\)/);
 assert.match(index, /await clearSyncPending\(key\)/);
 assert.match(index, /!SYNC_QUEUE_KEYS\.has\(String\(key\)\).*writeSyncBaseline/);
-const realtime = index.match(/const FIRESTORE_REALTIME_KEYS\s*=\s*\[([^\]]*)\]/);
+const realtime = index.match(/const PAGE_REALTIME_KEYS\s*=\s*\{([\s\S]*?)\n\};/);
 assert.ok(realtime);
 assert.doesNotMatch(realtime[1], /staffAccounts/);
+assert.match(realtime[1], /visitsClinic/);
+assert.match(realtime[1], /visitsDental/);
 const background = index.match(/const BACKGROUND_REFRESH_KEYS\s*=\s*\[([^\]]*)\]/);
 assert.ok(background);
 assert.doesNotMatch(background[1], /staffAccounts/);
-console.log('PASS sync-outbox-test: persistent queue/backoff, per-table serialization, and no global account refresh listeners.');
+console.log('PASS sync-outbox-test: persistent queue/backoff, per-table serialization, and page-scoped realtime without account listeners.');
