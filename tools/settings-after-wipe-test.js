@@ -20,6 +20,6 @@ assert.match(cloudKeys, /visitsClinic.*visitsDental.*visitsOperations.*visitsLab
 assert.match(cloudKeys, /income.*expense/s, 'cloud wipe must include income and expense');
 assert.doesNotMatch(cloudKeys, /doctors|employees|settings|categories|specialties|payroll|labExpenses|auditLog/, 'cloud wipe must not include settings, doctors, employees, or unrelated tables');
 assert.match(source, /clearLocalHospitalData\(\{ scope: "business", wipeMarker:/, 'cloud marker must use the limited business scope');
-assert.match(source, /if \(!businessOnly\) \{\n    DB\.settings = \{ \.\.\.DEFAULT_SETTINGS_AFTER_WIPE \};/, 'settings reset must be limited to local full-browser cleanup');
+assert.match(source, /if \(!businessOnly\) \{\r?\n    DB\.settings = \{ \.\.\.DEFAULT_SETTINGS_AFTER_WIPE \};/, 'settings reset must be limited to local full-browser cleanup');
 
 console.log('PASS settings-after-wipe-test: local/cloud cleanup recreates settings arrays required by the settings page.');
