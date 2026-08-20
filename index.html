@@ -1301,7 +1301,7 @@ function entryTimeDisplay(createdAt) {
 // زيارة" و"أجر يومي ثابت" لم يعد كل الأطباء على نظام النسبة.
 function doctorFeeSummary(d) {
   const mode = d.type === "أسنان" ? "percent" : (d.feeMode || "fixed_visit");
-  if (mode === "percent") return `طبيب ${pctDisplay(d.docPct)}% / مجمع ${pctDisplay(d.clinicPct)}%`;
+  if (mode === "percent") return `كشف: طبيب ${pctDisplay(d.docPct)}% / مجمع ${pctDisplay(d.clinicPct)}% · متابعة: طبيب ${pctDisplay(d.docFollowupPct ?? d.docPct)}% / مجمع ${pctDisplay(d.clinicFollowupPct ?? d.clinicPct)}%`;
   if (mode === "fixed_daily") return `أجر يومي ثابت ${fmt(d.dailyFixedAmount)} ج.م`;
   return `كشف ${fmt(d.checkupPrice)} (مجمع ${fmt(d.checkupClinicFee)}) · متابعة ${fmt(d.followupPrice)} (مجمع ${fmt(d.followupClinicFee)}) · استشارة ${fmt(d.consultationPrice ?? d.checkupPrice)} · جلسة ${fmt(d.sessionPrice ?? d.checkupPrice)}`;
 }
@@ -1850,6 +1850,14 @@ function clinicFeeForDoctor(doctor, examType) {
   if (examType === "جلسة") return Number(doctor.sessionClinicFee ?? doctor.checkupClinicFee) || 0;
   return Number(doctor.checkupClinicFee) || 0;
 }
+function percentShareForExam(doctor, examType) {
+  if (!doctor) return { doc: 0, clinic: 0 };
+  const isFollowup = examType === "متابعة";
+  return {
+    doc: Number(isFollowup ? (doctor.docFollowupPct ?? doctor.docPct) : doctor.docPct) || 0,
+    clinic: Number(isFollowup ? (doctor.clinicFollowupPct ?? doctor.clinicPct) : doctor.clinicPct) || 0,
+  };
+}
 function computeShare(visit) {
   const d = dInfo(visit.doctorId);
   if (!d) return { doc: 0, clinic: 0 };
@@ -1863,11 +1871,11 @@ function computeShare(visit) {
     const clinicShare = Math.min(Math.max(clinicFee, 0), paid);
     return { doc: paid - clinicShare, clinic: clinicShare };
   }
-  // percent (الأسنان دايمًا، أو أى طبيب عيادات مازال يستخدم النظام القديم بالنسبة)
-  // ملحوظة: زيارات "متابعة" كانت تُستبعد بالكامل من حساب النسبة (تُعتبر مجانية)،
-  // لكن بناءً على طلب صريح تم إلغاء هذا الاستبعاد - أى زيارة "متابعة" الآن تُحسب
-  // بنفس نسبة الطبيب/المجمع تمامًا مثل "كشف"، لأنها قد تحمل مبالغ حقيقية مدفوعة.
-  return { doc: paid * (Number(d.docPct) || 0), clinic: paid * (Number(d.clinicPct) || 0) };
+  // النسبة تُختار حسب نوع الزيارة: كشف/استشارة/جلسة تستخدم نسبة الكشف،
+  // والمتابعة تستخدم نسبة المتابعة. السجلات القديمة التي لا تحتوي النسبة الجديدة
+  // ترجع تلقائيًا إلى نسب الكشف القديمة للحفاظ على التوافق.
+  const pct = percentShareForExam(d, visit.examType);
+  return { doc: paid * pct.doc, clinic: paid * pct.clinic };
 }
 // حصة الطبيب/المجمع من قيد وارد "إجمالي يومي" (بديل تسجيل كل زيارة على حدة) -
 // يُستخدم لما يُختار طبيب مباشرة فى نموذج تسجيل الوارد بدل تسجيل كل مريض فرديًا.
@@ -1887,7 +1895,8 @@ function incomeDoctorShare(rec) {
   const amt = Number(rec.amount) || 0;
   const mode = d.type === "أسنان" ? "percent" : (d.feeMode || "fixed_visit");
   if (mode === "fixed_visit" || mode === "fixed_daily") return { doc: 0, clinic: amt };
-  return { doc: amt * (d.docPct || 0), clinic: amt * (d.clinicPct || 0) };
+  const pct = percentShareForExam(d, rec.examType);
+  return { doc: amt * pct.doc, clinic: amt * pct.clinic };
 }
 function visitRemaining(v) {
   const legacyAmount = Number(v.amount) || 0;
@@ -2224,7 +2233,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.34";
+const APP_VERSION = "v1.3.35";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -4379,7 +4388,7 @@ function renderMoneyPage(kind) {
             <option value="">بدون طبيب (تحصيل عادي)</option>
             ${DB.doctors.filter(d => d.status !== "موقوف").map(d => {
               const mode = d.type === "أسنان" ? "percent" : (d.feeMode || "fixed_visit");
-              const label = mode === "percent" ? `طبيب ${pctDisplay(d.docPct)}% / مجمع ${pctDisplay(d.clinicPct)}%` : (mode === "fixed_daily" ? "أجر يومي ثابت" : "مبلغ ثابت لكل زيارة");
+              const label = mode === "percent" ? `كشف ${pctDisplay(d.docPct)}% / متابعة ${pctDisplay(d.docFollowupPct ?? d.docPct)}%` : (mode === "fixed_daily" ? `أجر يومي ثابت ${fmt(d.dailyFixedAmount)} ج.م` : "مبلغ ثابت لكل زيارة");
               return `<option value="${d.id}" ${editing?.doctorId === d.id ? "selected" : ""} data-fee-mode="${mode}" data-doc-pct="${d.docPct || 0}" data-clinic-pct="${d.clinicPct || 0}">${esc(d.name)} — ${esc(d.specialty)} (${label})</option>`;
             }).join("")}
           </select>
@@ -4958,16 +4967,22 @@ function doctorSettlementSectionHTML() {
     const labRec = DB.labExpenses.find(x => x.doctorId === d.id && x.month === ym);
     const labExpense = Number(labRec?.amount) || 0;
     let netRevenue, docShare, clinicShare;
-    if (mode === "percent") {
-      netRevenue = Math.max(0, grossRevenue - labExpense);
-      docShare = netRevenue * (d.docPct || 0);
-      clinicShare = netRevenue * (d.clinicPct || 0) + Math.min(labExpense, grossRevenue); // يسترد المجمع مصروف المعمل من إجمالى الإيراد قبل القسمة
+    const perVisit = docVisits.reduce((s, v) => { const sh = computeShare(v); return { doc: s.doc + sh.doc, clinic: s.clinic + sh.clinic }; }, { doc: 0, clinic: 0 });
+    const perLump = docLumpIncome.reduce((s, r) => { const sh = incomeDoctorShare(r); return { doc: s.doc + sh.doc, clinic: s.clinic + sh.clinic }; }, { doc: 0, clinic: 0 });
+    netRevenue = Math.max(0, grossRevenue - labExpense);
+    if (mode === "fixed_daily") {
+      // الأجر اليومي يُحسب مرة واحدة لكل يوم عمل فعلي، لا مرة لكل زيارة.
+      // يشمل أيام الزيارات وقيود الوارد اليومية المرتبطة بالطبيب.
+      const activeDays = new Set([
+        ...docVisits.map(v => v.date).filter(Boolean),
+        ...docLumpIncome.map(r => r.date).filter(Boolean),
+      ]);
+      docShare = Math.max(0, Number(d.dailyFixedAmount) || 0) * activeDays.size;
+      clinicShare = Math.max(0, grossRevenue - labExpense - docShare);
     } else {
-      const perVisit = docVisits.reduce((s, v) => { const sh = computeShare(v); return { doc: s.doc + sh.doc, clinic: s.clinic + sh.clinic }; }, { doc: 0, clinic: 0 });
-      const perLump = docLumpIncome.reduce((s, r) => { const sh = incomeDoctorShare(r); return { doc: s.doc + sh.doc, clinic: s.clinic + sh.clinic }; }, { doc: 0, clinic: 0 });
       docShare = perVisit.doc + perLump.doc;
+      // مصروف المعمل تكلفة على المجمع، ولا يغيّر نسبة الطبيب حسب نوع الكشف.
       clinicShare = Math.max(0, perVisit.clinic + perLump.clinic - labExpense);
-      netRevenue = grossRevenue - labExpense;
     }
     return { doctor: d, grossRevenue, labExpense, netRevenue, docShare, clinicShare, visitCount: docVisits.length + docLumpIncome.length };
   }).filter(r => r.visitCount > 0 || r.labExpense > 0);
@@ -5500,12 +5515,19 @@ function renderSettings() {
           </div>
 
           <div id="percentFeeFields" style="display:contents;">
-            <div class="field"><label>نسبة الطبيب %</label><input type="text" inputmode="decimal" step="0.01" min="0" max="100" name="docPct" id="docPctInput" value="${editingDoc ? pctDisplay(editingDoc.docPct) : 70}"></div>
+            <div class="field"><label>نسبة الطبيب — كشف %</label><input type="text" inputmode="decimal" step="0.01" min="0" max="100" name="docPct" id="docPctInput" value="${editingDoc ? pctDisplay(editingDoc.docPct) : 70}"></div>
             <div class="field">
-              <label>نسبة المجمع %</label>
+              <label>نسبة المجمع — كشف %</label>
               <input type="text" inputmode="decimal" step="0.01" min="0" max="100" name="clinicPct" id="clinicPctInput" value="${editingDoc ? pctDisplay(editingDoc.clinicPct) : 30}">
               <div class="hint" id="pctSumHint" style="margin-top:4px;"></div>
             </div>
+            <div class="field"><label>نسبة الطبيب — متابعة %</label><input type="text" inputmode="decimal" step="0.01" min="0" max="100" name="docFollowupPct" id="docFollowupPctInput" value="${editingDoc ? pctDisplay(editingDoc.docFollowupPct ?? editingDoc.docPct) : 70}"></div>
+            <div class="field">
+              <label>نسبة المجمع — متابعة %</label>
+              <input type="text" inputmode="decimal" step="0.01" min="0" max="100" name="clinicFollowupPct" id="clinicFollowupPctInput" value="${editingDoc ? pctDisplay(editingDoc.clinicFollowupPct ?? editingDoc.clinicPct) : 30}">
+              <div class="hint" id="followupPctSumHint" style="margin-top:4px;"></div>
+            </div>
+            <div class="hint" style="grid-column:span 2;">يمكن تحديد نسبة مستقلة للكشف ونسبة مستقلة للمتابعة. إذا زادت نسبة المتابعة للطبيب، تُحسب نسبة المجمع تلقائيًا من الباقي.</div>
           </div>
 
           <div id="fixedVisitFeeFields" style="display:contents;">
@@ -5925,16 +5947,21 @@ function renderSettings() {
     // يظهر فى القائمة المنسدلة (المخفية أصلًا للأسنان فى الواجهة).
     const feeMode = type === "أسنان" ? "percent" : (fd.get("feeMode") || "fixed_visit");
     const docPctVal = Number(fd.get("docPct")) || 0, clinicPctVal = Number(fd.get("clinicPct")) || 0;
-    // إصلاح محاسبي: هذا التحقق لازم فقط لو النظام المختار هو "نسبة" - أما فى نظام
-    // "مبلغ ثابت لكل زيارة" أو "أجر يومي ثابت" فمفهوم "المجموع = 100%" لا ينطبق أصلًا.
+    const docFollowupPctVal = Number(fd.get("docFollowupPct")) || 0, clinicFollowupPctVal = Number(fd.get("clinicFollowupPct")) || 0;
+    // كل نوع له مجموع مستقل 100%: كشف، ثم متابعة.
     if (feeMode === "percent" && Math.abs(docPctVal + clinicPctVal - 100) > 0.01) {
-      showToast(`⚠️ مجموع النسبتين حاليًا ${(docPctVal + clinicPctVal).toFixed(2)}% - يجب أن يكون المجموع 100% بالضبط`);
+      showToast(`⚠️ مجموع نسب الكشف حاليًا ${(docPctVal + clinicPctVal).toFixed(2)}% - يجب أن يكون 100% بالضبط`);
+      return;
+    }
+    if (feeMode === "percent" && Math.abs(docFollowupPctVal + clinicFollowupPctVal - 100) > 0.01) {
+      showToast(`⚠️ مجموع نسب المتابعة حاليًا ${(docFollowupPctVal + clinicFollowupPctVal).toFixed(2)}% - يجب أن يكون 100% بالضبط`);
       return;
     }
     const rec = {
       name: fd.get("name"), specialty: fd.get("specialty"), type,
       status: fd.get("status"), feeMode,
       docPct: docPctVal / 100, clinicPct: clinicPctVal / 100,
+      docFollowupPct: docFollowupPctVal / 100, clinicFollowupPct: clinicFollowupPctVal / 100,
       checkupPrice: Number(fd.get("checkupPrice")) || 0, checkupClinicFee: Number(fd.get("checkupClinicFee")) || 0,
       followupPrice: Number(fd.get("followupPrice")) || 0, followupClinicFee: Number(fd.get("followupClinicFee")) || 0,
       consultationPrice: Number(fd.get("consultationPrice")) || Number(fd.get("checkupPrice")) || 0,
@@ -5961,27 +5988,38 @@ function renderSettings() {
     route();
     persistAfterPaint("doctors", "بيانات الطبيب");
   });
-  // تحديث حى لمجموع النسبتين + تعبئة تلقائية لنسبة المجمع كلما تغيّرت نسبة
-  // الطبيب (تسهيلًا للإدخال الصحيح من البداية بدل الاعتماد فقط على رفض الحفظ لاحقًا)
+  // لكل نوع نسبة مستقلة: تغيير نسبة الطبيب يملأ نسبة المجمع من الباقي تلقائيًا.
   const docPctInput = document.getElementById("docPctInput");
   const clinicPctInput = document.getElementById("clinicPctInput");
+  const docFollowupPctInput = document.getElementById("docFollowupPctInput");
+  const clinicFollowupPctInput = document.getElementById("clinicFollowupPctInput");
   const pctSumHint = document.getElementById("pctSumHint");
-  function updatePctSumHint() {
-    if (!pctSumHint) return;
-    const sum = (Number(docPctInput?.value) || 0) + (Number(clinicPctInput?.value) || 0);
+  const followupPctSumHint = document.getElementById("followupPctSumHint");
+  function updatePctPairHint(docInput, clinicInput, hint, label) {
+    if (!hint) return;
+    const doc = Number(docInput?.value) || 0;
+    const clinic = Number(clinicInput?.value) || 0;
+    const sum = doc + clinic;
     const ok = Math.abs(sum - 100) <= 0.01;
-    pctSumHint.textContent = `المجموع الحالى: ${sum.toFixed(2)}%${ok ? " ✅" : " — يجب أن يكون 100%"}`;
-    pctSumHint.style.color = ok ? "var(--income, #1a7f37)" : "var(--expense, #c0392b)";
+    hint.textContent = `${label}: ${sum.toFixed(2)}%${ok ? " ✅" : " — يجب أن يكون 100%"}`;
+    hint.style.color = ok ? "var(--income, #1a7f37)" : "var(--expense, #c0392b)";
   }
-  if (docPctInput && clinicPctInput) {
-    updatePctSumHint();
-    docPctInput.addEventListener("input", () => {
-      const v = Number(docPctInput.value);
-      if (!Number.isNaN(v)) clinicPctInput.value = Math.max(0, Math.round((100 - v) * 100) / 100);
-      updatePctSumHint();
+  function updatePctHints() {
+    updatePctPairHint(docPctInput, clinicPctInput, pctSumHint, "مجموع نسب الكشف");
+    updatePctPairHint(docFollowupPctInput, clinicFollowupPctInput, followupPctSumHint, "مجموع نسب المتابعة");
+  }
+  function bindPctPair(docInput, clinicInput) {
+    if (!docInput || !clinicInput) return;
+    docInput.addEventListener("input", () => {
+      const v = Number(docInput.value);
+      if (!Number.isNaN(v)) clinicInput.value = Math.max(0, Math.round((100 - v) * 100) / 100);
+      updatePctHints();
     });
-    clinicPctInput.addEventListener("input", updatePctSumHint);
+    clinicInput.addEventListener("input", updatePctHints);
   }
+  bindPctPair(docPctInput, clinicPctInput);
+  bindPctPair(docFollowupPctInput, clinicFollowupPctInput);
+  updatePctHints();
   // إظهار/إخفاء حقول طريقة احتساب الحصة حسب "النوع" و"طريقة الاحتساب" المختارَين:
   // الأسنان تُقفَل دايمًا على "نسبة" (وتُخفى قائمة اختيار الطريقة أصلًا)، والعيادات
   // تختار من الثلاث طرق بحرّية.
