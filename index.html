@@ -447,16 +447,26 @@ const DB = {
   labExpenses: [],
 };
 
-const DEFAULT_XRAY_TYPES = ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار"];
-const DEFAULT_LAB_TEST_TYPES = ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد"];
+const DEFAULT_XRAY_TYPES = ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار", "أشعة دوبلر", "أشعة بانوراما الأسنان"];
+const DEFAULT_LAB_TEST_TYPES = ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد", "تحليل دهون كامل", "وظائف الغدة الدرقية"];
+const SERVICE_TYPES_VERSION = 2;
 function ensureSettingsDefaults(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const xrayTypes = Array.isArray(source.xrayTypes) && source.xrayTypes.length ? [...source.xrayTypes] : [...DEFAULT_XRAY_TYPES];
+  const labTestTypes = Array.isArray(source.labTestTypes) && source.labTestTypes.length ? [...source.labTestTypes] : [...DEFAULT_LAB_TEST_TYPES];
+  // ترحيل لمرة واحدة: إضافة النوعين الجديدين مع الحفاظ على أي أنواع مخصصة أضافها المستخدم.
+  // بعد تسجيل الإصدار لا نعيد الأنواع إذا حذفها المدير لاحقًا عمدًا.
+  if (Number(source.serviceTypesVersion) < SERVICE_TYPES_VERSION) {
+    DEFAULT_XRAY_TYPES.forEach(type => { if (!xrayTypes.includes(type)) xrayTypes.push(type); });
+    DEFAULT_LAB_TEST_TYPES.forEach(type => { if (!labTestTypes.includes(type)) labTestTypes.push(type); });
+  }
   return {
     ...source,
     openingBalance: Number.isFinite(Number(source.openingBalance)) ? Number(source.openingBalance) : 0,
     idleTimeoutMinutes: source.idleTimeoutMinutes === 0 ? 0 : (Number(source.idleTimeoutMinutes) > 0 ? Number(source.idleTimeoutMinutes) : 5),
-    xrayTypes: Array.isArray(source.xrayTypes) && source.xrayTypes.length ? [...source.xrayTypes] : [...DEFAULT_XRAY_TYPES],
-    labTestTypes: Array.isArray(source.labTestTypes) && source.labTestTypes.length ? [...source.labTestTypes] : [...DEFAULT_LAB_TEST_TYPES],
+    serviceTypesVersion: Math.max(Number(source.serviceTypesVersion) || 0, SERVICE_TYPES_VERSION),
+    xrayTypes,
+    labTestTypes,
   };
 }
 
@@ -738,8 +748,9 @@ const CLOUD_BUSINESS_KEYS_TO_CLEAR = [
 const DEFAULT_SETTINGS_AFTER_WIPE = {
   openingBalance: 0,
   idleTimeoutMinutes: 5,
-  xrayTypes: ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار"],
-  labTestTypes: ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد"],
+  serviceTypesVersion: 2,
+  xrayTypes: ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار", "أشعة دوبلر", "أشعة بانوراما الأسنان"],
+  labTestTypes: ["صورة دم كاملة (CBC)", "وظائف كبد", "وظائف كلى", "سكر صائم", "سكر تراكمى (HbA1c)", "تحليل بول", "تحليل براز", "فيروسات كبد", "تحليل دهون كامل", "وظائف الغدة الدرقية"],
 };
 
 async function clearLocalHospitalData(options = {}) {
@@ -1519,11 +1530,13 @@ async function loadAll(options = {}) {
   DB.income = or(incomeRaw, []);
   DB.expense = or(expenseRaw, []);
   DB.payroll = or(payrollRaw, []);
+  const hadServiceTypesMigration = Number(settingsRaw?.serviceTypesVersion) < SERVICE_TYPES_VERSION;
   DB.settings = ensureSettingsDefaults(settingsRaw);
   // مهلة الإغلاق التلقائى بعد عدم الاستخدام (بالدقائق) - افتراضيًا 5 دقائق، ويمكن للمدير
-  // تعديلها أو تعطيلها (0) من صفحة الإعدادات. لا نُعيد ضبطها هنا إن كانت محفوظة مسبقًا حتى
-  // لو كانت صفرًا (معطّلة) حتى نحترم اختيار المدير.
+  // تعديلها أو تعطيلها (0) من صفحة الإعدادات. لا نُعيد ضبطها هنا إن كانت صفرًا (معطّلة)
+  // حتى نحترم اختيار المدير.
   DB.settings = ensureSettingsDefaults(DB.settings);
+  if (hadServiceTypesMigration) persist("settings");
   const staffAccountsWasEmpty = !staffAccountsRaw || staffAccountsRaw.length === 0;
   DB.staffAccounts = or(staffAccountsRaw, seedStaffAccounts());
   // لا نُنشئ أو نكتب حسابات من الكاش المحلي؛ الحسابات تُدار عبر users/API فقط.
@@ -1539,10 +1552,25 @@ async function loadAll(options = {}) {
     persist("specialties");
   }
   DB.auditLog = auditLogRaw || [];
+  // ترقية آمنة للسجلات القديمة: بعض نسخ الخدمة السابقة حفظت اليومية دون
+  // linkedIncomeId، فكانت الإيرادات موجودة في اليومية لكنها لا تظهر في دفتر الوارد
+  // ولا في الرئيسية. نضيف القيد مرة واحدة لكل سجل مدفوع بلا رابط، ولا نلمس السجل
+  // إذا كان مرتبطًا بالفعل.
+  let incomeBackfillNeeded = false;
+  const backfillIncomeLinks = (rows, kind) => (rows || []).forEach(v => {
+    if (!v.linkedIncomeId && (Number(v.paid) || 0) > 0) {
+      syncVisitIncomeLink(v, kind, true);
+      incomeBackfillNeeded = true;
+    }
+  });
+  backfillIncomeLinks(DB.visitsClinic, "clinic");
+  backfillIncomeLinks(DB.visitsDental, "dental");
+  backfillIncomeLinks(DB.visitsOperations, "operations");
+  backfillIncomeLinks(DB.visitsLabs, "labs");
+  backfillIncomeLinks(DB.visitsRadiology, "radiology");
+  if (incomeBackfillNeeded) persist("income");
   if (isFirstRun) {
-    DB.visitsClinic.forEach(v => syncVisitIncomeLink(v, "clinic", true));
-    DB.visitsDental.forEach(v => syncVisitIncomeLink(v, "dental", true));
-    ["doctors","employees","visitsClinic","visitsDental","income","expense","payroll"].forEach(persist);
+    ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll"].forEach(persist);
   }
   // تأكد من وجود حسابات الموظفين حتى لو لم تكن أول تشغيل (ترقية من نسخة قديمة)
   if (!DB.staffAccounts || DB.staffAccounts.length === 0) {
@@ -1912,7 +1940,10 @@ function allVisits() {
   ];
 }
 
-// حساب الإيرادات حسب فترة مختارة (اليوم/الأسبوع/الشهر/السنة) لقائمة لوحة القيادة المنسدلة
+// الحساب المالي للفترة المختارة في لوحة القيادة. مصدر الإيرادات والمنصرف هو
+// دفتر الخزينة نفسه، لأن كل زيارة مدفوعة (عيادات/أسنان/عمليات/تحاليل/أشعة)
+// تُنشئ قيدًا مرتبطًا في DB.income، ولأن الوارد اليدوي يجب أن يظهر أيضًا. استخدام
+// الزيارات وحدها كان يُسقط خدمات الأقسام الثلاثة والوارد اليدوي من بطاقة اليوم.
 const PERIOD_LABELS = { today: "اليوم", week: "هذا الأسبوع", month: "هذا الشهر", year: "هذه السنة" };
 function startOfWeekISO() {
   const now = new Date();
@@ -1920,30 +1951,31 @@ function startOfWeekISO() {
   start.setDate(now.getDate() - now.getDay());
   return localISO(start);
 }
-function periodRevenue(period) {
-  const visits = allVisits();
-  // قيود الوارد المرتبطة بطبيب (إجمالي يومي بديل) تُحتسَب هنا أيضًا حتى لا يقل
-  // الإجمالي المعروض عن الحقيقة لو استُخدمت طريقة "التحصيل الإجمالي" بدل تسجيل
-  // كل مريض على حدة.
-  const lumpIncome = DB.income.filter(r => r.doctorId);
+function dashboardRowsForPeriod(rows, period) {
   const t = todayISO();
-  let matches, lumpMatches;
   if (period === "week") {
     const start = startOfWeekISO();
-    matches = visits.filter(v => v.date >= start && v.date <= t);
-    lumpMatches = lumpIncome.filter(r => r.date >= start && r.date <= t);
-  } else if (period === "month") {
-    matches = visits.filter(v => (v.date || "").slice(0, 7) === t.slice(0, 7));
-    lumpMatches = lumpIncome.filter(r => (r.date || "").slice(0, 7) === t.slice(0, 7));
-  } else if (period === "year") {
-    matches = visits.filter(v => (v.date || "").slice(0, 4) === t.slice(0, 4));
-    lumpMatches = lumpIncome.filter(r => (r.date || "").slice(0, 4) === t.slice(0, 4));
-  } else {
-    matches = visits.filter(v => v.date === t);
-    lumpMatches = lumpIncome.filter(r => r.date === t);
+    return rows.filter(r => (r.date || "") >= start && (r.date || "") <= t);
   }
-  const total = matches.reduce((s, v) => s + (Number(v.paid) || 0), 0) + lumpMatches.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  return { count: matches.length + lumpMatches.length, total };
+  if (period === "month") return rows.filter(r => (r.date || "").slice(0, 7) === t.slice(0, 7));
+  if (period === "year") return rows.filter(r => (r.date || "").slice(0, 4) === t.slice(0, 4));
+  return rows.filter(r => r.date === t);
+}
+function periodFinancials(period) {
+  const incomeRows = dashboardRowsForPeriod(DB.income, period);
+  const expenseRows = dashboardRowsForPeriod(DB.expense, period);
+  return {
+    incomeRows,
+    expenseRows,
+    income: incomeRows.reduce((s, r) => s + (Number(r.amount) || 0), 0),
+    expense: expenseRows.reduce((s, r) => s + (Number(r.amount) || 0), 0),
+    incomeCount: incomeRows.length,
+    expenseCount: expenseRows.length,
+  };
+}
+function periodRevenue(period) {
+  const financials = periodFinancials(period);
+  return { count: financials.incomeCount, total: financials.income };
 }
 // إيراد طبيب مُحدَّد (إجمالي المحصَّل من زياراته الفردية + قيود الوارد الإجمالية المرتبطة به، وحصته من الاثنين معًا)
 function doctorRevenue(doctorId) {
@@ -2233,7 +2265,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.35";
+const APP_VERSION = "v1.3.36";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 async function migrateCurrentDataToFirestore() {
@@ -3122,15 +3154,16 @@ function renderDashboard() {
   const c = document.getElementById("content");
   const visits = allVisits();
   const today = todayISO();
-  const totalRevenue = visits.reduce((s, v) => s + (Number(v.paid) || 0), 0);
+  const totalRevenue = DB.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const totalExpense = DB.expense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const balance = currentBalance();
   const overdue = visits.filter(v => visitRemaining(v) > 0).length;
   const clinicShare = visits.reduce((s, v) => s + computeShare(v).clinic, 0) + DB.income.reduce((s, r) => s + incomeDoctorShare(r).clinic, 0);
   const docShare = visits.reduce((s, v) => s + computeShare(v).doc, 0) + DB.income.reduce((s, r) => s + incomeDoctorShare(r).doc, 0);
-  const dentalRevenue = DB.visitsDental.reduce((s, v) => s + (Number(v.paid) || 0), 0);
-  const clinicRevenue = DB.visitsClinic.reduce((s, v) => s + (Number(v.paid) || 0), 0);
-  const periodStat = periodRevenue(state.dashboardPeriod || "today");
+  const dentalRevenue = DB.income.filter(x => x.category === "أسنان").reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const clinicRevenue = DB.income.filter(x => x.category === "كشف").reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const selectedPeriod = state.dashboardPeriod || "today";
+  const periodStat = periodFinancials(selectedPeriod);
   const docList = sortedDoctors();
   const selectedDocId = state.dashboardDoctor && docList.some(d => d.id === state.dashboardDoctor) ? state.dashboardDoctor : "";
   const docStat = doctorRevenue(selectedDocId);
@@ -3142,7 +3175,7 @@ function renderDashboard() {
     days.push(localISO(d));
   }
   const dayLabels = days.map(d => new Date(d).toLocaleDateString("ar-EG", { weekday: "short" }));
-  const dayRevenue = days.map(d => visits.filter(v => v.date === d).reduce((s, v) => s + (Number(v.paid) || 0), 0));
+  const dayRevenue = days.map(d => DB.income.filter(x => x.date === d).reduce((s, x) => s + (Number(x.amount) || 0), 0));
 
   // تذكير بالنسخة الاحتياطية: يظهر فقط لمن يملك صلاحية التعامل مع الإعدادات
   // (المدير عادة)، ولو مضى 7 أيام أو أكثر منذ آخر نسخة احتياطية فعلية من هذا
@@ -3164,21 +3197,21 @@ function renderDashboard() {
       </div>
       <div class="card kpi dashboard-link-card" data-dashboard-page="clinic" role="button" tabindex="0" title="فتح يومية العيادات">
         <div class="label" style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-          <span>إيرادات ${PERIOD_LABELS[state.dashboardPeriod] || "اليوم"}</span>
+          <span>إيرادات ${PERIOD_LABELS[selectedPeriod] || "اليوم"}</span>
           <select id="dashboardPeriodSelect" style="font-size:11px; padding:2px 6px; border-radius:6px; border:1px solid var(--border,#ccc); background:var(--card); color:var(--ink);">
-            <option value="today" ${(state.dashboardPeriod || "today") === "today" ? "selected" : ""}>اليوم</option>
+            <option value="today" ${selectedPeriod === "today" ? "selected" : ""}>اليوم</option>
             <option value="week" ${state.dashboardPeriod === "week" ? "selected" : ""}>الأسبوع</option>
             <option value="month" ${state.dashboardPeriod === "month" ? "selected" : ""}>الشهر</option>
             <option value="year" ${state.dashboardPeriod === "year" ? "selected" : ""}>السنة</option>
           </select>
         </div>
-        <div class="value income">${fmt(periodStat.total)} ج.م</div>
-        <div class="delta">${fmtInt(periodStat.count)} زيارة</div>
+        <div class="value income">${fmt(periodStat.income)} ج.م</div>
+        <div class="delta">${fmtInt(periodStat.incomeCount)} حركة وارد</div>
       </div>
       <div class="card kpi dashboard-link-card" data-dashboard-page="expense" role="button" tabindex="0" title="فتح المصروفات">
-        <div class="label">إجمالي المصروفات</div>
-        <div class="value expense">${fmt(totalExpense)} ج.م</div>
-        <div class="delta">${DB.expense.length} عملية صرف</div>
+        <div class="label">مصروفات ${PERIOD_LABELS[selectedPeriod] || "اليوم"}</div>
+        <div class="value expense">${fmt(periodStat.expense)} ج.م</div>
+        <div class="delta">${fmtInt(periodStat.expenseCount)} عملية صرف</div>
       </div>
       <div class="card kpi dashboard-link-card" data-dashboard-page="outstandingBalancesClinic" role="button" tabindex="0" title="فتح المرضى المتأخرين بالسداد">
         <div class="label">مرضى متأخرون بالسداد</div>
@@ -3274,7 +3307,7 @@ function renderDashboard() {
 
   charts.inout = new Chart(document.getElementById("chartInOut"), {
     type: "bar",
-    data: { labels: ["إجمالي التحصيل", "المنصرف"], datasets: [{ data: [DB.income.reduce((s,x)=>s+(Number(x.amount)||0),0), totalExpense], backgroundColor: [income, expense], borderRadius: 8 }] },
+    data: { labels: ["إجمالي التحصيل", "المنصرف"], datasets: [{ data: [totalRevenue, totalExpense], backgroundColor: [income, expense], borderRadius: 8 }] },
     options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
   });
 

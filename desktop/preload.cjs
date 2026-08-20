@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('MitaliDesktop', Object.freeze({
   isDesktop: true,
   platform: process.platform,
-  appVersion: 'v1.3.35',
+  appVersion: 'v1.3.36',
   getUpdateState: () => ipcRenderer.invoke('update:get-state'),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
