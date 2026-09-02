@@ -1639,8 +1639,8 @@ const PAGE_DATA_KEYS = {
   dashboard: ["doctors", ...REVENUE_VISIT_DB_KEYS, "income", "expense"],
   clinic: ["doctors", "visitsClinic"], dental: ["doctors", "visitsDental"],
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
-  radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
-  ledger: ["income", "expense", "settings"], payroll: ["employees", "payroll"],
+  radiology: ["doctors", "visitsRadiology"], income: [...REVENUE_VISIT_DB_KEYS, "income"], expense: ["expense"],
+  ledger: [...REVENUE_VISIT_DB_KEYS, "income", "expense", "settings"], payroll: ["employees", "payroll"],
   reports: ["doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense", "payroll"],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
@@ -1677,6 +1677,24 @@ async function loadKeys(keys, options = {}) {
   DATA_VERSION++;
 }
 function pageKeys(page) { return PAGE_DATA_KEYS[page] || ["doctors", "employees", "settings"]; }
+// مصالحة idempotent: كل زيارة مدفوعة في الأقسام الخمسة تقابل قيدًا واحدًا.
+// لا نستبدل collection كاملة، بل نرفع السجلات التي أُضيفت/عُدّلت فقط.
+async function reconcileVisitIncomeLinks() {
+  if (!Array.isArray(DB.income)) DB.income = [];
+  const changedVisitKeys = new Set();
+  const beforeIncome = JSON.stringify(DB.income);
+  for (const source of VISIT_SOURCE_DEFINITIONS) {
+    const visits = Array.isArray(DB[source.dbKey]) ? DB[source.dbKey] : [];
+    for (const visit of visits) {
+      const previousLink = visit.linkedIncomeId || "";
+      syncVisitIncomeLink(visit, source.kindKey, true);
+      if (previousLink !== (visit.linkedIncomeId || "")) changedVisitKeys.add(source.dbKey);
+    }
+  }
+  if (beforeIncome !== JSON.stringify(DB.income)) await persist("income");
+  for (const key of changedVisitKeys) await persist(key);
+  return { incomeChanged: beforeIncome !== JSON.stringify(DB.income), changedVisitKeys: [...changedVisitKeys] };
+}
 async function ensurePageDataLoaded(page, options = {}) {
   if (STORAGE_MODE !== "firestore" || !currentUser) return;
   const keys = pageKeys(page);
@@ -1691,7 +1709,10 @@ async function ensurePageDataLoaded(page, options = {}) {
       .finally(() => PAGE_DATA_LOADING.delete(queueKey));
     PAGE_DATA_LOADING.set(queueKey, task);
   }
-  try { await PAGE_DATA_LOADING.get(queueKey); }
+  try {
+    await PAGE_DATA_LOADING.get(queueKey);
+    if (page === "income" || page === "ledger" || page === "dashboard") await reconcileVisitIncomeLinks();
+  }
   catch (error) { console.warn("Page data refresh failed:", page, error && (error.code || error.message)); return; }
   if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
 }
@@ -7328,8 +7349,8 @@ const PAGE_REALTIME_KEYS = {
   dashboard: ["income", "expense", ...REVENUE_VISIT_DB_KEYS],
   clinic: ["visitsClinic"], dental: ["visitsDental"],
   operations: ["visitsOperations"], labs: ["visitsLabs"], radiology: ["visitsRadiology"],
-  income: ["income"], expense: ["expense"], payroll: ["payroll"],
-  ledger: ["income", "expense", "settings"],
+  income: ["income", ...REVENUE_VISIT_DB_KEYS], expense: ["expense"], payroll: ["payroll"],
+  ledger: ["income", "expense", "settings", ...REVENUE_VISIT_DB_KEYS],
   reports: ["income", "expense", "payroll", ...REVENUE_VISIT_DB_KEYS],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
