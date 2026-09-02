@@ -4486,7 +4486,9 @@ function renderMoneyPage(kind) {
   const canAdd = can(kind, "add"), canEdit = can(kind, "edit"), canDelete = can(kind, "delete");
 
   const monthStateKey = isIncome ? "incomeMonth" : "expenseMonth";
-  if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
+  // الوارد والمنصرف يعرضان كل السجل افتراضيًا؛ يختار المستخدم شهرًا محددًا عند الحاجة.
+  // هذا يمنع ظهور عدد محدود ظاهريًا بسبب فلتر الشهر الحالي، دون قصّ DB.income أو DB.expense.
+  if (!state[monthStateKey]) state[monthStateKey] = "all";
   const monthOptions = buildMonthOptions(list.map(x => x.date));
   const selectedMonth = state[monthStateKey];
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
