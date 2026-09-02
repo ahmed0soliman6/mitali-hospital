@@ -1052,6 +1052,21 @@ async function detectStorageMode() {
   STORAGE_MODE = "local";
 }
 
+// Auth قد يستعيد الجلسة بعد أول فحص للتخزين. لا يجوز أن تبقى الصفحة في وضع
+// local عند وجود مستخدم Firebase صالح، وإلا ستعرض كاشًا قديمًا ولن تطلب
+// collections المالية من Firestore.
+function activateFirestoreModeIfAuthenticated() {
+  const firebaseUser = window.MitaliFirebase && typeof window.MitaliFirebase.authUser === "function"
+    ? window.MitaliFirebase.authUser() : null;
+  if (!firebaseUser) return false;
+  STORAGE_MODE = "firestore";
+  try {
+    localStorage.setItem(FIRESTORE_ACTIVE_FLAG, "1");
+    localStorage.setItem(FIRESTORE_MIGRATED_FLAG, "1");
+  } catch (e) { /* ignore */ }
+  return true;
+}
+
 
 
 async function storeGet(key, fallback, options = {}) {
@@ -1088,6 +1103,7 @@ async function storeGet(key, fallback, options = {}) {
     }
     return key in MEMORY_STORE ? MEMORY_STORE[key] : fallback;
   } catch (e) {
+    if (options.requireServer) throw e;
     return fallback;
   }
 }
@@ -2278,7 +2294,11 @@ function visitIncomeDesc(rec, kind) {
   return `${(VISIT_KIND_META[kind] || VISIT_KIND_META.clinic).label} — ${rec.patient}${rec.fileNo ? " (ملف " + rec.fileNo + ")" : ""}`;
 }
 function syncVisitIncomeLink(rec, kind, skipPersist) {
-  const linked = rec.linkedIncomeId ? DB.income.find(x => x.id === rec.linkedIncomeId) : null;
+  const stableReceiptNo = `V-${rec.fileNo || rec.id}`;
+  // أصلح السجلات القديمة التي فقدت linkedIncomeId دون إنشاء قيد ثانٍ عند كل
+  // تشغيل: ابحث أولًا عن القيد التلقائي ذي رقم الزيارة الثابت.
+  const linked = (rec.linkedIncomeId && DB.income.find(x => x.id === rec.linkedIncomeId))
+    || DB.income.find(x => x.receiptNo === stableReceiptNo && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات");
   const paid = Number(rec.paid) || 0;
   if (paid > 0) {
     const desc = visitIncomeDesc(rec, kind);
@@ -2290,15 +2310,15 @@ function syncVisitIncomeLink(rec, kind, skipPersist) {
       linked.paymentMethod = rec.paymentMethod || linked.paymentMethod;
     } else {
       const inc = {
-        id: uid(), date: rec.date || todayISO(), receiptNo: `V-${rec.fileNo || rec.id}`,
+        id: `visit-income-${kind}-${rec.id}`, date: rec.date || todayISO(), receiptNo: stableReceiptNo,
         party: rec.patient, category: (VISIT_KIND_META[kind] || VISIT_KIND_META.clinic).incomeCategory, desc,
         paymentMethod: rec.paymentMethod || "نقدي", amount: paid,
         receiver: currentUser ? currentUser.displayName : "", notes: "تم إنشاؤه تلقائيًا من سجل الزيارات",
         createdAt: rec.createdAt || nowISO(),
       };
       DB.income.push(inc);
-      rec.linkedIncomeId = inc.id;
     }
+    rec.linkedIncomeId = linked ? linked.id : `visit-income-${kind}-${rec.id}`;
     if (!skipPersist) persist("income");
   } else if (linked) {
     const idx = DB.income.findIndex(x => x.id === linked.id);
@@ -3732,12 +3752,14 @@ function renderVisitsPage(kind) {
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف الزيارات"); return; }
     const target = list.find(v => v.id === b.dataset.del);
-    const hasLinked = target && target.linkedIncomeId;
+    const linkedIncome = target && ((target.linkedIncomeId && DB.income.find(x => x.id === target.linkedIncomeId))
+      || DB.income.find(x => x.receiptNo === `V-${target.fileNo || target.id}` && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات"));
+    const hasLinked = !!linkedIncome;
     if (!confirm(hasLinked ? "هل تريد حذف هذه الزيارة؟ سيتم أيضًا حذف حركة الوارد المرتبطة بها فى دفتر الخزينة." : "هل تريد حذف هذه الزيارة؟")) return;
     try {
       if (hasLinked) {
-        await markSyncTombstone("income", target.linkedIncomeId);
-        const idx2 = DB.income.findIndex(x => x.id === target.linkedIncomeId);
+        await markSyncTombstone("income", linkedIncome.id);
+        const idx2 = DB.income.findIndex(x => x.id === linkedIncome.id);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
@@ -3986,12 +4008,14 @@ function renderServiceVisitsPage(kind) {
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف السجلات"); return; }
     const target = list.find(v => v.id === b.dataset.del);
-    const hasLinked = target && target.linkedIncomeId;
+    const linkedIncome = target && ((target.linkedIncomeId && DB.income.find(x => x.id === target.linkedIncomeId))
+      || DB.income.find(x => x.receiptNo === `V-${target.fileNo || target.id}` && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات"));
+    const hasLinked = !!linkedIncome;
     if (!confirm(hasLinked ? "هل تريد حذف هذا السجل؟ سيتم أيضًا حذف حركة الوارد المرتبطة به فى دفتر الخزينة." : "هل تريد حذف هذا السجل؟")) return;
     try {
       if (hasLinked) {
-        await markSyncTombstone("income", target.linkedIncomeId);
-        const idx2 = DB.income.findIndex(x => x.id === target.linkedIncomeId);
+        await markSyncTombstone("income", linkedIncome.id);
+        const idx2 = DB.income.findIndex(x => x.id === linkedIncome.id);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
@@ -4486,7 +4510,8 @@ function renderMoneyPage(kind) {
   const canAdd = can(kind, "add"), canEdit = can(kind, "edit"), canDelete = can(kind, "delete");
 
   const monthStateKey = isIncome ? "incomeMonth" : "expenseMonth";
-  if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
+  // كل السجلات هي العرض الافتراضي؛ الشهر اختيار اختياري لا فلتر مخفي.
+  if (!state[monthStateKey]) state[monthStateKey] = "all";
   const monthOptions = buildMonthOptions(list.map(x => x.date));
   const selectedMonth = state[monthStateKey];
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
@@ -4772,7 +4797,8 @@ function renderLedger() {
   const totalIn = DB.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const totalOut = DB.expense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
 
-  if (!state.ledgerMonth) state.ledgerMonth = todayISO().slice(0, 7);
+  // دفتر الخزينة يحسب ويعرض كل الحركات افتراضيًا، مع إبقاء فلتر الشهر اختياريًا.
+  if (!state.ledgerMonth) state.ledgerMonth = "all";
   const monthOptions = buildMonthOptions(allRows.map(r => r.date));
   const selectedMonth = state.ledgerMonth;
   const monthRows = selectedMonth === "all" ? allRows : allRows.filter(r => (r.date || "").startsWith(selectedMonth));
@@ -7446,6 +7472,9 @@ async function boot() {
   if (navigator.onLine && window.MitaliFirebase && window.MitaliFirebase.waitForAuth) {
     try { await window.MitaliFirebase.waitForAuth(); } catch (authWaitError) { console.warn("Firebase Auth restore wait failed:", authWaitError); }
   }
+  // لا يكفي أن تكون الجلسة المحلية موجودة: بعد اكتمال Auth يجب إعادة ضبط
+  // الوضع قبل route/تحميل الصفحة حتى لا يتم اعتماد cache محلي ناقص.
+  activateFirestoreModeIfAuthenticated();
   // لا نعتمد على قائمة staffAccounts المحلية وحدها عند reload. نقرأ ملف المستخدم
   // الحالي من users مباشرة إذا لم يكن موجودًا في الكاش، ثم نضعه في الكاش دون
   // إعادة تحميل قائمة الحسابات كاملة.
@@ -7475,7 +7504,13 @@ async function boot() {
     subscribeFirestoreRealtime();
     flushSyncQueue();
   }
-  if (currentUser && STORAGE_MODE === "firestore") schedulePageDataLoad(state.page);
+  if (currentUser && STORAGE_MODE === "firestore") {
+    // قراءة كاملة مؤكدة عند أول فتح بعد استعادة الجلسة، ثم يسمح TTL بالتخزين
+    // المؤقت في التنقلات اللاحقة.
+    ensurePageDataLoaded(state.page, { force: true, requireServer: navigator.onLine }).catch(error => {
+      console.warn("Initial Firestore page load failed; local cache retained:", error);
+    });
+  }
 }
 boot();
 
