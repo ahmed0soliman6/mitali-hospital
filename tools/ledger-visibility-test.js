@@ -9,7 +9,7 @@ const moneyEnd = source.indexOf('// صفحة دفتر الخزينة', moneyStar
 assert.ok(moneyStart >= 0 && moneyEnd > moneyStart, 'renderMoneyPage block should exist');
 const moneyBlock = source.slice(moneyStart, moneyEnd);
 
-assert.match(moneyBlock, /if \(!state\[monthStateKey\]\) state\[monthStateKey\] = "all";/);
+assert.match(moneyBlock, /if \(!state\[monthStateKey\]\) state\[monthStateKey\] = todayISO\(\)\.slice\(0, 7\);/);
 assert.match(moneyBlock, /const filteredList = selectedMonth === "all" \? list : list\.filter/);
 assert.match(moneyBlock, /const totalAmt = filteredList\.reduce/);
 assert.match(moneyBlock, /const moneyPg = paginateList\(sortedMoney, `money_\$\{kind\}`\);/);
@@ -24,4 +24,4 @@ assert.match(source, /function allPatientVisits\(\) \{\s*return visitsFromSource
 assert.match(source, /income: \["income"\], expense: \["expense"\]/);
 assert.match(source, /const list = isIncome \? DB\.income : DB\.expense;/);
 
-console.log('PASS ledger-visibility-test: income and expense default to all months, retain complete totals, paginate only for display, and all five visit sources are included.');
+console.log('PASS ledger-visibility-test: income and expense default to the current month, retain complete totals, paginate only for display, and all five visit sources are included.');
