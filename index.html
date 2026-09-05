@@ -1052,6 +1052,21 @@ async function detectStorageMode() {
   STORAGE_MODE = "local";
 }
 
+// Auth قد يستعيد الجلسة بعد أول فحص للتخزين. لا يجوز أن تبقى الصفحة في وضع
+// local عند وجود مستخدم Firebase صالح، وإلا ستعرض كاشًا قديمًا ولن تطلب
+// collections المالية من Firestore.
+function activateFirestoreModeIfAuthenticated() {
+  const firebaseUser = window.MitaliFirebase && typeof window.MitaliFirebase.authUser === "function"
+    ? window.MitaliFirebase.authUser() : null;
+  if (!firebaseUser) return false;
+  STORAGE_MODE = "firestore";
+  try {
+    localStorage.setItem(FIRESTORE_ACTIVE_FLAG, "1");
+    localStorage.setItem(FIRESTORE_MIGRATED_FLAG, "1");
+  } catch (e) { /* ignore */ }
+  return true;
+}
+
 
 
 async function storeGet(key, fallback, options = {}) {
@@ -1088,6 +1103,7 @@ async function storeGet(key, fallback, options = {}) {
     }
     return key in MEMORY_STORE ? MEMORY_STORE[key] : fallback;
   } catch (e) {
+    if (options.requireServer) throw e;
     return fallback;
   }
 }
@@ -1617,8 +1633,8 @@ const PAGE_DATA_KEYS = {
   dashboard: ["doctors", ...REVENUE_VISIT_DB_KEYS, "income", "expense"],
   clinic: ["doctors", "visitsClinic"], dental: ["doctors", "visitsDental"],
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
-  radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
-  ledger: ["income", "expense", "settings"], payroll: ["employees", "payroll"],
+  radiology: ["doctors", "visitsRadiology"], income: [...REVENUE_VISIT_DB_KEYS, "income"], expense: ["expense"],
+  ledger: [...REVENUE_VISIT_DB_KEYS, "income", "expense", "settings"], payroll: ["employees", "payroll"],
   reports: ["doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense", "payroll"],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
@@ -1655,6 +1671,24 @@ async function loadKeys(keys, options = {}) {
   DATA_VERSION++;
 }
 function pageKeys(page) { return PAGE_DATA_KEYS[page] || ["doctors", "employees", "settings"]; }
+// مصالحة idempotent: كل زيارة مدفوعة في الأقسام الخمسة تقابل قيدًا واحدًا.
+// لا نستبدل collection كاملة، بل نرفع السجلات التي أُضيفت/عُدّلت فقط.
+async function reconcileVisitIncomeLinks() {
+  if (!Array.isArray(DB.income)) DB.income = [];
+  const changedVisitKeys = new Set();
+  const beforeIncome = JSON.stringify(DB.income);
+  for (const source of VISIT_SOURCE_DEFINITIONS) {
+    const visits = Array.isArray(DB[source.dbKey]) ? DB[source.dbKey] : [];
+    for (const visit of visits) {
+      const previousLink = visit.linkedIncomeId || "";
+      syncVisitIncomeLink(visit, source.kindKey, true);
+      if (previousLink !== (visit.linkedIncomeId || "")) changedVisitKeys.add(source.dbKey);
+    }
+  }
+  if (beforeIncome !== JSON.stringify(DB.income)) await persist("income");
+  for (const key of changedVisitKeys) await persist(key);
+  return { incomeChanged: beforeIncome !== JSON.stringify(DB.income), changedVisitKeys: [...changedVisitKeys] };
+}
 async function ensurePageDataLoaded(page, options = {}) {
   if (STORAGE_MODE !== "firestore" || !currentUser) return;
   const keys = pageKeys(page);
@@ -1669,7 +1703,10 @@ async function ensurePageDataLoaded(page, options = {}) {
       .finally(() => PAGE_DATA_LOADING.delete(queueKey));
     PAGE_DATA_LOADING.set(queueKey, task);
   }
-  try { await PAGE_DATA_LOADING.get(queueKey); }
+  try {
+    await PAGE_DATA_LOADING.get(queueKey);
+    if (page === "income" || page === "ledger" || page === "dashboard") await reconcileVisitIncomeLinks();
+  }
   catch (error) { console.warn("Page data refresh failed:", page, error && (error.code || error.message)); return; }
   if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
 }
@@ -2272,7 +2309,11 @@ function visitIncomeDesc(rec, kind) {
   return `${(VISIT_KIND_META[kind] || VISIT_KIND_META.clinic).label} — ${rec.patient}${rec.fileNo ? " (ملف " + rec.fileNo + ")" : ""}`;
 }
 function syncVisitIncomeLink(rec, kind, skipPersist) {
-  const linked = rec.linkedIncomeId ? DB.income.find(x => x.id === rec.linkedIncomeId) : null;
+  const stableReceiptNo = `V-${rec.fileNo || rec.id}`;
+  // أصلح السجلات القديمة التي فقدت linkedIncomeId دون إنشاء قيد ثانٍ عند كل
+  // تشغيل: ابحث أولًا عن القيد التلقائي ذي رقم الزيارة الثابت.
+  const linked = (rec.linkedIncomeId && DB.income.find(x => x.id === rec.linkedIncomeId))
+    || DB.income.find(x => x.receiptNo === stableReceiptNo && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات");
   const paid = Number(rec.paid) || 0;
   if (paid > 0) {
     const desc = visitIncomeDesc(rec, kind);
@@ -2284,15 +2325,15 @@ function syncVisitIncomeLink(rec, kind, skipPersist) {
       linked.paymentMethod = rec.paymentMethod || linked.paymentMethod;
     } else {
       const inc = {
-        id: uid(), date: rec.date || todayISO(), receiptNo: `V-${rec.fileNo || rec.id}`,
+        id: `visit-income-${kind}-${rec.id}`, date: rec.date || todayISO(), receiptNo: stableReceiptNo,
         party: rec.patient, category: (VISIT_KIND_META[kind] || VISIT_KIND_META.clinic).incomeCategory, desc,
         paymentMethod: rec.paymentMethod || "نقدي", amount: paid,
         receiver: currentUser ? currentUser.displayName : "", notes: "تم إنشاؤه تلقائيًا من سجل الزيارات",
         createdAt: rec.createdAt || nowISO(),
       };
       DB.income.push(inc);
-      rec.linkedIncomeId = inc.id;
     }
+    rec.linkedIncomeId = linked ? linked.id : `visit-income-${kind}-${rec.id}`;
     if (!skipPersist) persist("income");
   } else if (linked) {
     const idx = DB.income.findIndex(x => x.id === linked.id);
@@ -3726,12 +3767,14 @@ function renderVisitsPage(kind) {
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف الزيارات"); return; }
     const target = list.find(v => v.id === b.dataset.del);
-    const hasLinked = target && target.linkedIncomeId;
+    const linkedIncome = target && ((target.linkedIncomeId && DB.income.find(x => x.id === target.linkedIncomeId))
+      || DB.income.find(x => x.receiptNo === `V-${target.fileNo || target.id}` && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات"));
+    const hasLinked = !!linkedIncome;
     if (!confirm(hasLinked ? "هل تريد حذف هذه الزيارة؟ سيتم أيضًا حذف حركة الوارد المرتبطة بها فى دفتر الخزينة." : "هل تريد حذف هذه الزيارة؟")) return;
     try {
       if (hasLinked) {
-        await markSyncTombstone("income", target.linkedIncomeId);
-        const idx2 = DB.income.findIndex(x => x.id === target.linkedIncomeId);
+        await markSyncTombstone("income", linkedIncome.id);
+        const idx2 = DB.income.findIndex(x => x.id === linkedIncome.id);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
@@ -3980,12 +4023,14 @@ function renderServiceVisitsPage(kind) {
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف السجلات"); return; }
     const target = list.find(v => v.id === b.dataset.del);
-    const hasLinked = target && target.linkedIncomeId;
+    const linkedIncome = target && ((target.linkedIncomeId && DB.income.find(x => x.id === target.linkedIncomeId))
+      || DB.income.find(x => x.receiptNo === `V-${target.fileNo || target.id}` && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات"));
+    const hasLinked = !!linkedIncome;
     if (!confirm(hasLinked ? "هل تريد حذف هذا السجل؟ سيتم أيضًا حذف حركة الوارد المرتبطة به فى دفتر الخزينة." : "هل تريد حذف هذا السجل؟")) return;
     try {
       if (hasLinked) {
-        await markSyncTombstone("income", target.linkedIncomeId);
-        const idx2 = DB.income.findIndex(x => x.id === target.linkedIncomeId);
+        await markSyncTombstone("income", linkedIncome.id);
+        const idx2 = DB.income.findIndex(x => x.id === linkedIncome.id);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
@@ -4768,7 +4813,8 @@ function renderLedger() {
   const totalIn = DB.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const totalOut = DB.expense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
 
-  if (!state.ledgerMonth) state.ledgerMonth = todayISO().slice(0, 7);
+  // دفتر الخزينة يحسب ويعرض كل الحركات افتراضيًا، مع إبقاء فلتر الشهر اختياريًا.
+  if (!state.ledgerMonth) state.ledgerMonth = "all";
   const monthOptions = buildMonthOptions(allRows.map(r => r.date));
   const selectedMonth = state.ledgerMonth;
   const monthRows = selectedMonth === "all" ? allRows : allRows.filter(r => (r.date || "").startsWith(selectedMonth));
@@ -7298,8 +7344,8 @@ const PAGE_REALTIME_KEYS = {
   dashboard: ["income", "expense", ...REVENUE_VISIT_DB_KEYS],
   clinic: ["visitsClinic"], dental: ["visitsDental"],
   operations: ["visitsOperations"], labs: ["visitsLabs"], radiology: ["visitsRadiology"],
-  income: ["income"], expense: ["expense"], payroll: ["payroll"],
-  ledger: ["income", "expense", "settings"],
+  income: ["income", ...REVENUE_VISIT_DB_KEYS], expense: ["expense"], payroll: ["payroll"],
+  ledger: ["income", "expense", "settings", ...REVENUE_VISIT_DB_KEYS],
   reports: ["income", "expense", "payroll", ...REVENUE_VISIT_DB_KEYS],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
@@ -7452,6 +7498,9 @@ async function boot() {
       }
     } catch (authWaitError) { console.warn("Firebase Auth restore wait failed:", authWaitError); }
   }
+  // لا يكفي أن تكون الجلسة المحلية موجودة: بعد اكتمال Auth يجب إعادة ضبط
+  // الوضع قبل route/تحميل الصفحة حتى لا يتم اعتماد cache محلي ناقص.
+  activateFirestoreModeIfAuthenticated();
   // لا نعتمد على قائمة staffAccounts المحلية وحدها عند reload. نقرأ ملف المستخدم
   // الحالي من users مباشرة إذا لم يكن موجودًا في الكاش، ثم نضعه في الكاش دون
   // إعادة تحميل قائمة الحسابات كاملة.
@@ -7481,7 +7530,13 @@ async function boot() {
     subscribeFirestoreRealtime();
     flushSyncQueue();
   }
-  if (currentUser && STORAGE_MODE === "firestore") schedulePageDataLoad(state.page);
+  if (currentUser && STORAGE_MODE === "firestore") {
+    // قراءة كاملة مؤكدة عند أول فتح بعد استعادة الجلسة، ثم يسمح TTL بالتخزين
+    // المؤقت في التنقلات اللاحقة.
+    ensurePageDataLoaded(state.page, { force: true, requireServer: navigator.onLine }).catch(error => {
+      console.warn("Initial Firestore page load failed; local cache retained:", error);
+    });
+  }
 }
 boot();
 
