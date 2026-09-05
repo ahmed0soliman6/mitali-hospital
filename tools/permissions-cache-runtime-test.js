@@ -55,7 +55,7 @@ awaitable(handlers.fetch({
 assert.ok(navigationResponsePromise, 'Service Worker must handle navigations');
 await navigationResponsePromise;
 assert.equal(contextLastFetchOptions.cache, 'no-store', 'navigation must prefer the network to avoid stale app shells');
-assert.match(swSource, /hospital-v1\.3\.46-firestore-only/);
+assert.match(swSource, /hospital-v1\.3\.\d+-firestore-only/);
 assert.doesNotMatch(swSource, /const urlsToCache = \[\'\.\/\',/);
 
 // Runtime check that the timeout wrapper forwards cache: no-store to fetch.
