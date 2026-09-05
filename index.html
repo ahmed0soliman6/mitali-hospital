@@ -1212,15 +1212,9 @@ function buildYearOptions(dates) {
   return Array.from(set).sort((a, b) => b.localeCompare(a));
 }
 // فلتر عام بالفترة (يوم / شهر / سنة / الكل) يُستخدم فى أكثر من صفحة (سجل الزيارات، قائمة المرضى)
-// الافتراضى دائمًا: عرض الشهر الحالى
-// إصلاح: كانت هذه الشاشات الثلاث (يومية العيادات، يومية الأسنان، ملفات المرضى)
-// تُفلتَر افتراضيًا على "الشهر الحالى" فقط بمجرد فتح الصفحة - فأى زيارة أو مريض
-// أقدم من الشهر الحالى (مثل أول مريض تم تسجيله، أو أي بيانات تاريخية) يختفي من
-// العرض تمامًا دون حذف فعلى، وهو ما بدا وكأنه "سجل مفقود" أو خطأ فى الحفظ رغم
-// إن البيانات كانت سليمة طوال الوقت. الافتراضى الآن "الكل" - تظهر كل السجلات
-// من أول استخدام للنظام، ويقدر المستخدم يضيّق العرض بالفلتر (يوم/شهر/سنة) براحته.
-function ensurePeriodFilter(granKey, valKey) {
-  if (!state[granKey]) state[granKey] = "all";
+// يمكن لكل صفحة تحديد افتراضيها؛ اليوميات تستخدم الشهر الحالي، بينما الصفحات الأخرى تبقى على إعدادها الحالي.
+function ensurePeriodFilter(granKey, valKey, defaultGranularity = "all") {
+  if (!state[granKey]) state[granKey] = defaultGranularity;
   if (!state[valKey]) {
     state[valKey] = state[granKey] === "day" ? todayISO()
       : state[granKey] === "year" ? todayISO().slice(0, 4)
@@ -3483,7 +3477,7 @@ function renderVisitsPage(kind) {
   const canAdd = can(kind, "add"), canEdit = can(kind, "edit"), canDelete = can(kind, "delete");
 
   const granKey = `visitFilterGran_${kind}`, valKey = `visitFilterVal_${kind}`;
-  ensurePeriodFilter(granKey, valKey);
+  ensurePeriodFilter(granKey, valKey, "month");
   const granularity = state[granKey], filterValue = state[valKey];
   const displayList = list.filter(v => periodMatches(v.date, granularity, filterValue));
   const sortedVisits = sortByEntryOrderDesc(displayList);
@@ -3821,7 +3815,7 @@ function renderServiceVisitsPage(kind) {
   const serviceDoctors = cfg.doctorType ? sortedDoctors().filter(d => d.type === cfg.doctorType && (d.status === "نشط" || d.id === editing?.doctorId)) : [];
 
   const granKey = `visitFilterGran_${kind}`, valKey = `visitFilterVal_${kind}`;
-  ensurePeriodFilter(granKey, valKey);
+  ensurePeriodFilter(granKey, valKey, "month");
   const granularity = state[granKey], filterValue = state[valKey];
   const displayList = list.filter(v => periodMatches(v.date, granularity, filterValue));
   const sortedVisits = sortByEntryOrderDesc(displayList);
@@ -4531,8 +4525,9 @@ function renderMoneyPage(kind) {
   const canAdd = can(kind, "add"), canEdit = can(kind, "edit"), canDelete = can(kind, "delete");
 
   const monthStateKey = isIncome ? "incomeMonth" : "expenseMonth";
-  // كل السجلات هي العرض الافتراضي؛ الشهر اختيار اختياري لا فلتر مخفي.
-  if (!state[monthStateKey]) state[monthStateKey] = "all";
+  // الوارد والمنصرف يعرضان الشهر الحالي افتراضيًا؛ ويمكن للمستخدم اختيار شهر آخر أو "كل الشهور".
+  // هذا تغيير عرض فقط ولا يقص DB.income أو DB.expense ولا يغير الحفظ أو المزامنة.
+  if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
   const monthOptions = buildMonthOptions(list.map(x => x.date));
   const selectedMonth = state[monthStateKey];
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
@@ -7491,7 +7486,17 @@ async function boot() {
   // انتظر استعادة Firebase Auth بعد reload قبل فحص الجلسة؛ currentUser قد يكون
   // محفوظًا محليًا بينما auth.currentUser لم يُستعد بعد من IndexedDB.
   if (navigator.onLine && window.MitaliFirebase && window.MitaliFirebase.waitForAuth) {
-    try { await window.MitaliFirebase.waitForAuth(); } catch (authWaitError) { console.warn("Firebase Auth restore wait failed:", authWaitError); }
+    try {
+      const restoredFirebaseUser = await window.MitaliFirebase.waitForAuth();
+      // detectStorageMode() قد يسبق استعادة Firebase Auth وينتهي مؤقتًا على
+      // local. بعد تأكد Auth من المستخدم، يجب تفعيل Firestore قبل route حتى
+      // لا تبقى الصفحة على كاش ناقص ولا تُهمل قراءة income/expense والزيارات.
+      if (restoredFirebaseUser) {
+        STORAGE_MODE = "firestore";
+        setFirestoreEnabled(true);
+        try { localStorage.setItem(FIRESTORE_MIGRATED_FLAG, "1"); } catch (e) { /* ignore */ }
+      }
+    } catch (authWaitError) { console.warn("Firebase Auth restore wait failed:", authWaitError); }
   }
   // لا يكفي أن تكون الجلسة المحلية موجودة: بعد اكتمال Auth يجب إعادة ضبط
   // الوضع قبل route/تحميل الصفحة حتى لا يتم اعتماد cache محلي ناقص.
