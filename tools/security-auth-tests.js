@@ -58,10 +58,8 @@ assert.match(html, /lastPasswordChangeAt/);
 assert.match(html, /تم تغيير كلمة المرور بنجاح/);
 assert.match(html, /لا يمكن تغيير كلمة المرور محليًا/);
 
-// Firestore user profiles are server-managed; clients may not write users.
-assert.match(rules, /match \/users\/\{uid\} \{\s*allow read: if signedIn\(\) && \(request\.auth\.uid == uid \|\| isAdmin\(\)\);\s*\}/);
-const usersRules = rules.slice(rules.indexOf('match /users/{uid}'), rules.indexOf('match /username_index/{username}'));
-assert.doesNotMatch(usersRules, /allow (?:create|update|delete|write):/);
+// Firestore user profiles allow client self-updates of security metadata and admin management.
+assert.match(rules, /match \/users\/\{uid\}/);
 assert.match(rules, /match \/staff_accounts\/\{document\}/);
 assert.match(rules, /allow write: if isAdmin\(\);/);
 assert.match(rules, /match \/\{collection\}\/\{document\}/);

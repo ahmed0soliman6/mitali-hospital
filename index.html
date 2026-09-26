@@ -7583,9 +7583,13 @@ async function validateSessionSecurity() {
     if (authUser && navigator.onLine && window.MitaliFirebase.getUserProfile) {
       try {
         const profile = await window.MitaliFirebase.getUserProfile(authUser.uid, { source: navigator.onLine ? "server" : undefined });
-        if (!profile || profile.status === "موقوف" || Number(profile.credentialVersion || profile.securityVersion || 1) !== localVersion) return false;
+        if (profile) {
+          if (profile.status === "موقوف") return false;
+          const remoteVersion = Number(profile.credentialVersion || profile.securityVersion || 1);
+          if (remoteVersion > localVersion) return false;
+        }
       } catch (error) {
-        if (!offlineTrusted) return false;
+        console.warn("Remote profile check skipped due to transient read error:", error);
       }
     }
   }
@@ -7597,10 +7601,18 @@ async function refreshCurrentSessionSecurity() {
     const authUser = window.MitaliFirebase.authUser();
     if (!authUser || !window.MitaliFirebase.getUserProfile) return;
     const profile = await window.MitaliFirebase.getUserProfile(authUser.uid, { source: navigator.onLine ? "server" : undefined });
-    const version = Number(profile && (profile.credentialVersion || profile.securityVersion) || 1);
-    if (!profile || profile.status === "موقوف" || version !== Number(currentUser.credentialVersion || currentUser.securityVersion || 1)) {
-      await logout();
-      renderLogin("انتهت صلاحية الجلسة الأمنية. سجّل الدخول مرة أخرى.");
+    if (profile) {
+      if (profile.status === "موقوف") {
+        await logout();
+        renderLogin("تم إيقاف هذا الحساب من قبل الإدارة.");
+        return;
+      }
+      const remoteVersion = Number(profile.credentialVersion || profile.securityVersion || 1);
+      const localVersion = Number(currentUser.credentialVersion || currentUser.securityVersion || 1);
+      if (remoteVersion > localVersion) {
+        await logout();
+        renderLogin("انتهت صلاحية الجلسة الأمنية. سجّل الدخول مرة أخرى.");
+      }
     }
   } catch (error) {
     console.warn("Session security refresh failed:", error && error.code ? error.code : "remote-read-error");
@@ -7936,10 +7948,19 @@ async function refreshTableFromFirestore(key, changes) {
     }
     if (key === "staffAccounts" && currentUser) {
       const me = getCurrentAccount();
-      if (!me || me.status === "موقوف" || Number(me.credentialVersion || me.securityVersion || 1) !== Number(currentUser.credentialVersion || currentUser.securityVersion || 1)) {
-        clearSession();
-        renderLogin("انتهت صلاحية الجلسة الأمنية. سجّل الدخول مرة أخرى.");
-        return;
+      if (me) {
+        if (me.status === "موقوف") {
+          clearSession();
+          renderLogin("تم إيقاف هذا الحساب من قبل الإدارة.");
+          return;
+        }
+        const remoteVer = Number(me.credentialVersion || me.securityVersion || 1);
+        const localVer = Number(currentUser.credentialVersion || currentUser.securityVersion || 1);
+        if (remoteVer > localVer) {
+          clearSession();
+          renderLogin("انتهت صلاحية الجلسة الأمنية. سجّل الدخول مرة أخرى.");
+          return;
+        }
       }
     }
     if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
