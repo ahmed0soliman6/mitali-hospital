@@ -29,14 +29,23 @@ function bearerToken(req) {
 }
 
 async function ensureAdminProfile(api, decoded) {
+  const current = await readProfile(api, decoded.uid);
+  if (current) return current;
+  for (const collectionName of ['users', 'staff_accounts']) {
+    const legacySnapshot = await api.firestore().collection(collectionName)
+      .where('username', '==', 'admin')
+      .get();
+    const legacy = legacySnapshot.docs.find(doc => String(doc.data().firebaseUid || '') === String(decoded.uid));
+    if (legacy) {
+      return writeProfilePair(api, decoded.uid, legacy.data());
+    }
+  }
   const authUser = await api.auth().getUser(decoded.uid);
   if (String(authUser.email || '').toLowerCase() !== authEmailForUsername('admin')) {
     const error = new Error('admin-profile-creation-not-allowed');
     error.status = 403;
     throw error;
   }
-  const current = await readProfile(api, decoded.uid);
-  if (current) return current;
   return writeProfilePair(api, decoded.uid, {
     firebaseUid: decoded.uid,
     username: 'admin',

@@ -9,6 +9,7 @@ const rules = fs.readFileSync(path.join(root, 'firestore.rules'), 'utf8');
 const store = fs.readFileSync(path.join(root, 'firebase-store.js'), 'utf8');
 const adminLib = fs.readFileSync(path.join(root, 'api/_lib/firebase-admin.js'), 'utf8');
 const adminApi = fs.readFileSync(path.join(root, 'api/admin/account.js'), 'utf8');
+const profileApi = fs.readFileSync(path.join(root, 'api/auth/profile.js'), 'utf8');
 
 function passwordPolicy(current, next, confirmation) {
   if (!next || next.length < 6) return 'weak';
@@ -86,5 +87,13 @@ assert.match(html, /credentialVersion/);
 assert.match(store, /ensureAdminProfile/);
 assert.match(html, /window\.MitaliFirebase\.ensureAdminProfile/);
 assert.doesNotMatch(html, /ملف صلاحيات admin غير موجود/);
+assert.match(profileApi, /verifyIdToken/);
+assert.match(profileApi, /readProfile\(api, decoded\.uid\)/);
+assert.match(profileApi, /where\('username', '==', 'admin'\)/);
+assert.match(profileApi, /String\(doc\.data\(\)\.firebaseUid \|\| ''\) === String\(decoded\.uid\)/);
+assert.match(profileApi, /\['users', 'staff_accounts'\]/);
+assert.match(profileApi, /writeProfilePair\(api, decoded\.uid, legacy\.data\(\)\)/);
+assert.match(html, /console\.error\("Firebase profile read failed:", profileErrorCode\)/);
+assert.match(html, /renderLogin\(genericLoginError\(\)\)/);
 
 console.log('PASS security-auth-tests: login validation, generic errors, lockout, session expiry, password policy, Firebase reauthentication, security versioning, and Firestore rule guards.');

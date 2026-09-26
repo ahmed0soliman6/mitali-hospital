@@ -7502,8 +7502,9 @@ function renderLogin(errorMsg) {
         if (oldIndex > -1) DB.staffAccounts[oldIndex] = Object.assign({}, DB.staffAccounts[oldIndex], firebaseAuthAccount);
         else DB.staffAccounts = [...(DB.staffAccounts || []), firebaseAuthAccount];
         } catch (profileError) {
-          console.error("Firebase profile read failed:", profileError);
-          renderLogin("تم قبول كلمة المرور، لكن تعذر قراءة ملف الصلاحيات من Firestore. راجع قواعد Firestore وDocument ID.");
+          const profileErrorCode = profileError && profileError.code ? profileError.code : "profile-read-error";
+          console.error("Firebase profile read failed:", profileErrorCode);
+          renderLogin(genericLoginError());
           return;
         }
       }
