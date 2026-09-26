@@ -211,7 +211,7 @@
       const response = await fetchWithTimeout(apiUrl(`/api/financial/summary?month=${encodeURIComponent(value)}`), {
         cache: "no-store",
         headers: { "Cache-Control": "no-store", "Authorization": `Bearer ${token}` },
-      });
+      }, 2500);
       const body = await response.json().catch(() => ({}));
       if (response.ok && body && body.income && typeof body.income.total === "number" && body.expense && typeof body.expense.total === "number") {
         return body;
@@ -220,21 +220,17 @@
       console.warn("Server financial summary API unavailable, using client Firestore aggregation:", apiErr?.message || apiErr);
     }
     await ready();
-    let incQuery = db.collection(collectionName("income"));
-    let expQuery = db.collection(collectionName("expense"));
-    if (value !== "all" && /^\d{4}-\d{2}$/.test(value)) {
-      const [year, m] = value.split("-").map(Number);
-      const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
-      incQuery = incQuery.where("date", ">=", `${value}-01`).where("date", "<=", `${value}-${String(lastDay).padStart(2, "0")}`);
-      expQuery = expQuery.where("date", ">=", `${value}-01`).where("date", "<=", `${value}-${String(lastDay).padStart(2, "0")}`);
-    }
-    const [incSnap, expSnap] = await Promise.all([incQuery.get(), expQuery.get()]);
-    const incTotal = incSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
-    const expTotal = expSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+    const incColl = db.collection(collectionName("income"));
+    const expColl = db.collection(collectionName("expense"));
+    const [incSnap, expSnap] = await Promise.all([incColl.get(), expColl.get()]);
+    const incDocs = value === "all" ? incSnap.docs : incSnap.docs.filter(d => String(d.data().date || "").startsWith(value));
+    const expDocs = value === "all" ? expSnap.docs : expSnap.docs.filter(d => String(d.data().date || "").startsWith(value));
+    const incTotal = incDocs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+    const expTotal = expDocs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
     return {
       month: value,
-      income: { total: incTotal, count: incSnap.docs.length },
-      expense: { total: expTotal, count: expSnap.docs.length },
+      income: { total: incTotal, count: incDocs.length },
+      expense: { total: expTotal, count: expDocs.length },
       totalIncome: incTotal,
       totalExpense: expTotal,
       net: incTotal - expTotal,

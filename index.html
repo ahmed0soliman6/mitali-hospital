@@ -1679,12 +1679,12 @@ function cachedFinancialSummary(month = "all") {
   };
 }
 async function getFinancialSummary(month = "all", options = {}) {
-  if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getFinancialSummary) return cachedFinancialSummary(month);
   const key = String(month || "all");
-  if (!options.force && FINANCIAL_SUMMARY_CACHE[key] && FINANCIAL_SUMMARY_CACHE[key].income) return FINANCIAL_SUMMARY_CACHE[key];
+  if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getFinancialSummary) return cachedFinancialSummary(key);
+  if (!options.force && FINANCIAL_SUMMARY_CACHE[key] && FINANCIAL_SUMMARY_CACHE[key].income && !FINANCIAL_SUMMARY_CACHE[key].isPlaceholder) return FINANCIAL_SUMMARY_CACHE[key];
   if (!FINANCIAL_SUMMARY_LOADING.has(key)) {
-    FINANCIAL_SUMMARY_LOADING.set(key, window.MitaliFirebase.getFinancialSummary(key).then(summary => {
-      if (summary && summary.income && summary.expense) {
+    const promise = window.MitaliFirebase.getFinancialSummary(key).then(summary => {
+      if (summary && summary.income && typeof summary.income.total === "number" && summary.expense && typeof summary.expense.total === "number") {
         FINANCIAL_SUMMARY_CACHE[key] = summary;
         return summary;
       }
@@ -1692,7 +1692,8 @@ async function getFinancialSummary(month = "all", options = {}) {
     }).catch(err => {
       console.warn("Could not fetch remote financial summary:", err);
       return cachedFinancialSummary(key);
-    }).finally(() => FINANCIAL_SUMMARY_LOADING.delete(key)));
+    }).finally(() => FINANCIAL_SUMMARY_LOADING.delete(key));
+    FINANCIAL_SUMMARY_LOADING.set(key, promise);
   }
   return FINANCIAL_SUMMARY_LOADING.get(key);
 }
