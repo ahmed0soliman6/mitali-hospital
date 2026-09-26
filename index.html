@@ -1081,8 +1081,10 @@ async function storeGet(key, fallback, options = {}) {
       try {
         const remote = await window.MitaliFirebase.getValue(key, fallback, options.requireServer ? { source: "server" } : {});
         if (remote !== undefined && remote !== null) {
+          const tombstones = await readSyncTombstones();
+          const blockedIds = new Set((Array.isArray(tombstones[key]) ? tombstones[key] : []).map(String));
           const tombstoneProtectedRemote = Array.isArray(remote) ? await protectRemoteSnapshotFromTombstones(key, remote) : remote;
-          const safeRemote = Array.isArray(tombstoneProtectedRemote) ? mergeRemoteSnapshot(key, tombstoneProtectedRemote) : tombstoneProtectedRemote;
+          const safeRemote = Array.isArray(tombstoneProtectedRemote) ? mergeRemoteSnapshot(key, tombstoneProtectedRemote, blockedIds) : tombstoneProtectedRemote;
           await cacheLocally(key, safeRemote);
           // إذا كان الجدول داخل outbox، فقد تحتوي safeRemote على سجل محلي
           // محفوظ مؤقتًا لحمايته من لقطة سحابية أقدم. لا نضع هذه اللقطة في
@@ -1143,10 +1145,9 @@ async function storeSetInner(key, value) {
         const tombstones = await readSyncTombstones();
         const explicitDeleted = (Array.isArray(tombstones[key]) ? tombstones[key] : []).map(String).filter(id => !nextMap.has(id));
         const changed = value.filter(r => r && r.id != null && (!previousMap.has(String(r.id)) || !syncRecordsEqual(key, previousMap.get(String(r.id)), r)));
-        const deleted = [...new Set([
-          ...(previous || []).filter(r => r && r.id != null && !nextMap.has(String(r.id))).map(r => String(r.id)),
-          ...explicitDeleted,
-        ])];
+        // ABSENCE != DELETE: local/remote snapshots may be partial or stale.
+        // Only an explicit tombstone is allowed to delete a Firestore document.
+        const deleted = [...new Set(explicitDeleted)];
         if (changed.length) await window.MitaliFirebase.upsertRecords(key, changed);
         if (deleted.length && window.MitaliFirebase.deleteRecords) await window.MitaliFirebase.deleteRecords(key, deleted);
         if (explicitDeleted.length) await clearSyncTombstones(key, explicitDeleted);
@@ -1743,7 +1744,7 @@ const ACTIVE_UI_SAVES = new Set();
 // بدأت قبل التعديل حتى لو اكتمل الحفظ أثناء انتظار طلب الشبكة.
 const TABLE_MUTATION_GENERATION = Object.create(null);
 const TABLE_MUTATION_AT = Object.create(null);
-function mergeRemoteSnapshot(key, remoteValue) {
+function mergeRemoteSnapshot(key, remoteValue, blockedIds = new Set()) {
   if (!Array.isArray(remoteValue) || !Array.isArray(DB[key])) return remoteValue;
   const local = DB[key] || [];
   const remote = remoteValue || [];
@@ -1760,11 +1761,11 @@ function mergeRemoteSnapshot(key, remoteValue) {
     if (recentMutation && (!localTime || !remoteTime) && !syncRecordsEqual(key, localRecord, remoteRecord)) return localRecord;
     return remoteRecord;
   });
-  // سجل جديد لم يظهر في لقطة السحابة بعد: احتفظ به خلال نافذة الحماية.
-  if (recentMutation) {
-    for (const localRecord of local) {
-      if (localRecord && localRecord.id != null && !remoteMap.has(localRecord.id)) merged.push(localRecord);
-    }
+  // Snapshot ناقصة لا تعني حذفًا. احتفظ بكل سجل محلي غائب عن اللقطة،
+  // باستثناء ID له Tombstone صريح؛ الحذف الوحيد المسموح يمر عبر Tombstone.
+  for (const localRecord of local) {
+    if (localRecord && localRecord.id != null && !remoteMap.has(localRecord.id)
+      && !blockedIds.has(String(localRecord.id))) merged.push(localRecord);
   }
   return merged;
 }

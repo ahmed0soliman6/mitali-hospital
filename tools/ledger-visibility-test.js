@@ -21,7 +21,7 @@ for (const key of ['visitsClinic', 'visitsDental', 'visitsOperations', 'visitsLa
   assert.match(sourceBlock, new RegExp(key));
 }
 assert.match(source, /function allPatientVisits\(\) \{\s*return visitsFromSources\(VISIT_SOURCE_DEFINITIONS\);/);
-assert.match(source, /income: \["income"\], expense: \["expense"\]/);
+assert.match(source, /income: \[\.\.\.REVENUE_VISIT_DB_KEYS, "income"\], expense: \["expense"\]/);
 assert.match(source, /const list = isIncome \? DB\.income : DB\.expense;/);
 
 console.log('PASS ledger-visibility-test: income and expense default to the current month, retain complete totals, paginate only for display, and all five visit sources are included.');
