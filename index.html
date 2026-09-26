@@ -7489,9 +7489,12 @@ function renderLogin(errorMsg) {
       if (window.MitaliFirebase.authUser()) {
         try {
         const authUser = window.MitaliFirebase.authUser();
-        const profile = authUser ? await window.MitaliFirebase.getUserProfile(authUser.uid, { source: "server" }) : null;
+        let profile = authUser ? await window.MitaliFirebase.getUserProfile(authUser.uid, { source: "server" }) : null;
+        if (!profile && username.toLowerCase() === "admin" && window.MitaliFirebase.ensureAdminProfile) {
+          profile = await window.MitaliFirebase.ensureAdminProfile();
+        }
         if (!profile) {
-          renderLogin("تم التحقق من كلمة المرور، لكن ملف صلاحيات admin غير موجود في Firestore.");
+          renderLogin(genericLoginError());
           return;
         }
         firebaseAuthAccount = Object.assign({}, profile, { id: authUser.uid, firebaseUid: authUser.uid });

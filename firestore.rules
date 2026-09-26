@@ -25,17 +25,11 @@ service cloud.firestore {
           && userDoc().data.permissions[moduleKey][actionKey] == true);
     }
 
-    // Account documents are never writable by the ordinary client except for
-    // the narrowly scoped metadata update already used by the signed-in user.
+    // Account documents are server-managed through the Admin SDK. The client
+    // may read its own profile (or profiles as an administrator), but cannot
+    // create, update, or delete users documents.
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
-      allow create: if isAdmin();
-      allow update: if isAdmin()
-        || (request.auth.uid == uid
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'lastLogin', 'credentialVersion', 'securityVersion', 'lastPasswordChangeAt'
-          ]));
-      allow delete: if isAdmin();
     }
 
     match /username_index/{username} {

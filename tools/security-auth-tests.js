@@ -57,8 +57,10 @@ assert.match(html, /lastPasswordChangeAt/);
 assert.match(html, /تم تغيير كلمة المرور بنجاح/);
 assert.match(html, /لا يمكن تغيير كلمة المرور محليًا/);
 
-// Firestore rules must prevent self privilege changes while allowing only security metadata.
-assert.match(rules, /affectedKeys\(\)\.hasOnly\(\[\s*'lastLogin',[\s\S]*?'lastPasswordChangeAt'\s*\]\)/);
+// Firestore user profiles are server-managed; clients may not write users.
+assert.match(rules, /match \/users\/\{uid\} \{\s*allow read: if signedIn\(\) && \(request\.auth\.uid == uid \|\| isAdmin\(\)\);\s*\}/);
+const usersRules = rules.slice(rules.indexOf('match /users/{uid}'), rules.indexOf('match /username_index/{username}'));
+assert.doesNotMatch(usersRules, /allow (?:create|update|delete|write):/);
 assert.match(rules, /match \/staff_accounts\/\{document\}/);
 assert.match(rules, /allow write: if isAdmin\(\);/);
 assert.match(rules, /match \/\{collection\}\/\{document\}/);
@@ -81,5 +83,8 @@ assert.match(adminLib, /passwordHash: api\.firestore\.FieldValue\.delete\(\)/);
 assert.match(html, /readTrustedDevice/);
 assert.match(html, /requireServer: true/);
 assert.match(html, /credentialVersion/);
+assert.match(store, /ensureAdminProfile/);
+assert.match(html, /window\.MitaliFirebase\.ensureAdminProfile/);
+assert.doesNotMatch(html, /ملف صلاحيات admin غير موجود/);
 
 console.log('PASS security-auth-tests: login validation, generic errors, lockout, session expiry, password policy, Firebase reauthentication, security versioning, and Firestore rule guards.');

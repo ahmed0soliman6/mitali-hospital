@@ -294,6 +294,19 @@
     const snap = options && options.source ? await ref.get({ source: options.source }) : await ref.get();
     return snap.exists ? Object.assign({ id: snap.id }, snap.data()) : null;
   }
+  async function ensureAdminProfile() {
+    init();
+    if (!auth || !auth.currentUser) throw new Error('Firebase user is not authenticated');
+    const token = await auth.currentUser.getIdToken();
+    const response = await fetchWithTimeout(apiUrl('/api/auth/profile'), {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Authorization': `Bearer ${token}` },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(body.error || `profile-api-${response.status}`), { code: body.error || `profile-api-${response.status}` });
+    return body.profile || null;
+  }
 
   async function updateOwnSecurityMetadata(metadata) {
     await ready();
@@ -548,6 +561,7 @@
     authUser,
     waitForAuth,
     getUserProfile,
+    ensureAdminProfile,
     setUserProfile,
     updateOwnSecurityMetadata,
     deleteUserProfile
