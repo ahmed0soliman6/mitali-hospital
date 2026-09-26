@@ -1709,8 +1709,16 @@ function getFirestorePageState(key) {
 }
 function pageQueryOptions(key, page) {
   const options = { pageSize: PAGE_SIZE, cursor: getFirestorePageState(key).cursors[page] || null };
-  const monthKey = state.monthStateKey === "incomeMonth" || state.monthStateKey === "expenseMonth" ? state[state.monthStateKey] : null;
-  if ((key === "income" || key === "expense") && monthKey) {
+  const monthKey =
+    state.monthStateKey === "incomeMonth" || state.monthStateKey === "expenseMonth"
+      ? state[state.monthStateKey]
+      : null;
+  if (
+    (key === "income" || key === "expense") &&
+    monthKey &&
+    monthKey !== "all" &&
+    /^\d{4}-\d{2}$/.test(monthKey)
+  ) {
     const [year, month] = String(monthKey).split("-").map(Number);
     const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
     options.where = [
@@ -4737,6 +4745,7 @@ function renderMoneyPage(kind) {
   const canAdd = can(kind, "add"), canEdit = can(kind, "edit"), canDelete = can(kind, "delete");
 
   const monthStateKey = isIncome ? "incomeMonth" : "expenseMonth";
+  state.monthStateKey = monthStateKey;
   // الوارد والمنصرف يعرضان الشهر الحالي افتراضيًا؛ ويمكن للمستخدم اختيار شهر آخر أو "كل الشهور".
   // هذا تغيير عرض فقط ولا يقص DB.income أو DB.expense ولا يغير الحفظ أو المزامنة.
   if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
@@ -4809,7 +4818,7 @@ function renderMoneyPage(kind) {
     </div>` : ""}
 
     <div class="card">
-      <div class="section-title">سجل ${isIncome ? "الوارد" : "المنصرف"} <span class="hint">${filteredList.length} عملية</span></div>
+      <div class="section-title">سجل ${isIncome ? "الوارد" : "المنصرف"} — <span class="hint">${fmtInt(totalCount)} عملية</span></div>
       <div class="table-wrap"><table>
         <thead><tr>
           <th>التاريخ</th><th>${partyLabel}</th><th>التصنيف</th><th>البيان</th>
@@ -4839,7 +4848,17 @@ function renderMoneyPage(kind) {
 
   bindPaginationEvents(c);
   const monthFilterSelect = document.getElementById("monthFilterSelect");
-  if (monthFilterSelect) monthFilterSelect.addEventListener("change", () => { state[monthStateKey] = monthFilterSelect.value; state.tablePage[`money_${kind}`] = 1; route(); });
+  if (monthFilterSelect) monthFilterSelect.addEventListener("change", () => {
+    state[monthStateKey] = monthFilterSelect.value;
+    state.tablePage[`money_${kind}`] = 1;
+    const pageState = getFirestorePageState(kind);
+    pageState.currentPage = 1;
+    pageState.cursors = { 1: null };
+    pageState.pages = {};
+    pageState.hasMore = {};
+    pageState.querySignature = undefined;
+    route();
+  });
 
   const moneyForm = document.getElementById("moneyForm");
   const incomeDoctorSelect = document.getElementById("incomeDoctorSelect");
