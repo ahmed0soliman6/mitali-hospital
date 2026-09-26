@@ -423,9 +423,15 @@
 
   async function deleteRecords(key, ids) {
     await ready();
-    const batch = db.batch();
-    ids.forEach((id) => batch.delete(db.collection(collectionName(key)).doc(String(id))));
-    await batch.commit();
+    const uniqueIds = [...new Set((ids || []).map(String))];
+    const CHUNK = 400;
+    for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+      const batch = db.batch();
+      uniqueIds.slice(i, i + CHUNK).forEach((id) => {
+        batch.delete(db.collection(collectionName(key)).doc(id));
+      });
+      await batch.commit();
+    }
   }
 
   function subscribe(key, onChange, onError) {

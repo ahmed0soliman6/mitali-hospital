@@ -18,7 +18,8 @@ const cloudKeysEnd = source.indexOf('];', cloudKeysStart);
 const cloudKeys = source.slice(cloudKeysStart, cloudKeysEnd);
 assert.match(cloudKeys, /visitsClinic.*visitsDental.*visitsOperations.*visitsLabs.*visitsRadiology/s, 'cloud wipe must include patient visit tables');
 assert.match(cloudKeys, /income.*expense/s, 'cloud wipe must include income and expense');
-assert.doesNotMatch(cloudKeys, /doctors|employees|settings|categories|specialties|payroll|labExpenses|auditLog/, 'cloud wipe must not include settings, doctors, employees, or unrelated tables');
+assert.doesNotMatch(cloudKeys, /doctors|employees|settings|categories|specialties|payroll|auditLog/, 'cloud wipe must not include settings, doctors, employees, or unrelated tables');
+assert.match(cloudKeys, /labExpenses/, 'cloud wipe must include lab expenses');
 assert.match(source, /clearLocalHospitalData\(\{ scope: "business", wipeMarker:/, 'cloud marker must use the limited business scope');
 assert.match(source, /if \(!businessOnly\) \{\r?\n    DB\.settings = \{ \.\.\.DEFAULT_SETTINGS_AFTER_WIPE \};/, 'settings reset must be limited to local full-browser cleanup');
 

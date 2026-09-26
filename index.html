@@ -744,6 +744,7 @@ const LOCAL_DATA_KEYS_TO_CLEAR = [
 ];
 const CLOUD_BUSINESS_KEYS_TO_CLEAR = [
   "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense",
+  "labExpenses",
 ];
 const DEFAULT_SETTINGS_AFTER_WIPE = {
   openingBalance: 0,
@@ -4821,8 +4822,16 @@ function renderMoneyPage(kind) {
     // الآن يُمسَح المرجع فورًا فى المصدر عند الحذف المباشر، فتبقى حالة الربط متسقة.
     if (removed) {
       if (isIncome) {
-        DB.visitsClinic.forEach(v => { if (v.linkedIncomeId === removed.id) v.linkedIncomeId = null; });
-        DB.visitsDental.forEach(v => { if (v.linkedIncomeId === removed.id) v.linkedIncomeId = null; });
+        for (const source of VISIT_SOURCE_DEFINITIONS) {
+          let changed = false;
+          for (const visit of DB[source.dbKey] || []) {
+            if (String(visit.linkedIncomeId || "") === String(removed.id)) {
+              visit.linkedIncomeId = null;
+              changed = true;
+            }
+          }
+          if (changed) await persist(source.dbKey);
+        }
       } else {
         DB.payroll.forEach(p => { if (p.linkedExpenseId === removed.id) p.linkedExpenseId = null; });
         DB.labExpenses.forEach(l => { if (l.linkedExpenseId === removed.id) l.linkedExpenseId = null; });
@@ -4830,10 +4839,7 @@ function renderMoneyPage(kind) {
     }
     logActivity(isIncome ? "حذف عملية وارد" : "حذف عملية منصرف", kind, removed, null);
     await persist(isIncome ? "income" : "expense");
-    if (removed) {
-      await persist("visitsClinic"); await persist("visitsDental");
-      await persist("payroll"); await persist("labExpenses");
-    }
+    if (removed && !isIncome) { await persist("payroll"); await persist("labExpenses"); }
     showToast("تم الحذف");
     route();
   }));
@@ -6915,13 +6921,30 @@ function renderAuditLogPage() {
     if (newTf) { newTf.focus(); newTf.setSelectionRange(caret, caret); }
   });
   document.getElementById("auditClearFilters").addEventListener("click", () => { state.auditFilters = {}; route(); });
-  document.getElementById("auditClearLog").addEventListener("click", () => {
+  document.getElementById("auditClearLog").addEventListener("click", async () => {
     if (!isAdminUser()) { showToast("⚠️ حذف السجل متاح للمدير فقط"); return; }
     if (!confirm("سيتم حذف كل سجل النشاط نهائيًا. متأكد؟")) return;
-    DB.auditLog = [];
-    persist("auditLog");
-    showToast("تم حذف سجل النشاط");
-    route();
+    const button = document.getElementById("auditClearLog");
+    if (button) button.disabled = true;
+    try {
+      const remote = await window.MitaliFirebase.getTable("auditLog", { source: "server" });
+      const ids = (Array.isArray(remote) ? remote : []).filter(record => record && record.id != null).map(record => String(record.id));
+      const CHUNK = 400;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        await window.MitaliFirebase.deleteRecords("auditLog", ids.slice(i, i + CHUNK));
+      }
+      DB.auditLog = [];
+      await cacheLocally("auditLog", []);
+      await writeSyncBaseline("auditLog", []);
+      await clearSyncPending("auditLog");
+      showToast(`تم حذف سجل النشاط نهائيًا (${ids.length} سجل)`);
+      route();
+    } catch (error) {
+      console.error("Audit log deletion failed:", error);
+      showToast("⚠️ تعذّر حذف سجل النشاط من السحابة؛ لم تُحذف النسخة المحلية", 5000);
+    } finally {
+      if (button) button.disabled = false;
+    }
   });
 }
 
@@ -7440,6 +7463,26 @@ function subscribeCloudWipeControl() {
   }
 }
 
+function applyRealtimeChanges(key, next, changes, blocked) {
+  if (PENDING_WRITES > 0 && SYNC_QUEUE_KEYS.has(String(key))) return next;
+  for (const change of (Array.isArray(changes) ? changes : [])) {
+    const record = change && change.record;
+    if (!record || record.id == null) continue;
+    if (blocked.has(String(record.id)) && change.type !== "removed") continue;
+    const index = next.findIndex(item => item && String(item.id) === String(record.id));
+    if (change.type === "removed") {
+      if (index >= 0) next.splice(index, 1);
+    } else if (index >= 0) {
+      const localRecord = next[index];
+      if (localRecord && localRecord.updatedAt && record.updatedAt && localRecord.updatedAt > record.updatedAt) continue;
+      next[index] = record;
+    } else {
+      next.push(record);
+    }
+  }
+  return next;
+}
+
 async function refreshTableFromFirestore(key, changes) {
   if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase || realtimeRefreshInProgress.has("fs:" + key)) return;
   // لا تسمح لقطة/حدث خارجي باستبدال تعديل محلي لم يؤكده الخادم.
@@ -7453,19 +7496,7 @@ async function refreshTableFromFirestore(key, changes) {
       const next = Array.isArray(DB[key]) ? DB[key].slice() : [];
       const tombstones = await readSyncTombstones();
       const blocked = new Set((Array.isArray(tombstones[key]) ? tombstones[key] : []).map(String));
-      for (const change of (Array.isArray(changes) ? changes : [])) {
-        const record = change && change.record;
-        if (!record || record.id == null) continue;
-        if (blocked.has(String(record.id)) && change.type !== "removed") continue;
-        const index = next.findIndex(item => item && String(item.id) === String(record.id));
-        if (change.type === "removed") {
-          if (index >= 0) next.splice(index, 1);
-        } else if (index >= 0) {
-          next[index] = record;
-        } else {
-          next.push(record);
-        }
-      }
+      applyRealtimeChanges(key, next, changes, blocked);
       safeFresh = next;
     }
     if (safeFresh === undefined || safeFresh === null) return;
