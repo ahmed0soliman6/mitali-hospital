@@ -1637,8 +1637,8 @@ const PAGE_DATA_KEYS = {
   dashboard: ["doctors", ...REVENUE_VISIT_DB_KEYS, "income", "expense"],
   clinic: ["doctors", "visitsClinic"], dental: ["doctors", "visitsDental"],
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
-  radiology: ["doctors", "visitsRadiology"], income: [...REVENUE_VISIT_DB_KEYS, "income"], expense: ["expense"],
-  ledger: [...REVENUE_VISIT_DB_KEYS, "income", "expense", "settings"], payroll: ["employees", "payroll"],
+  radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
+  ledger: ["income", "expense", "settings"], payroll: ["employees", "payroll"],
   reports: ["doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense", "payroll"],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
@@ -1650,6 +1650,63 @@ const PAGE_DATA_KEYS = {
 };
 const PAGE_DATA_LOADING = new Map();
 const PAGE_DATA_LOADED_AT = Object.create(null);
+const FIRESTORE_PAGE_STATE = Object.create(null);
+const SERVER_PAGED_KEYS = new Set([
+  "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology",
+  "income", "expense", "payroll", "labExpenses", "auditLog",
+]);
+const PAGE_PRIMARY_KEY = Object.freeze({
+  clinic: "visitsClinic", dental: "visitsDental", operations: "visitsOperations",
+  labs: "visitsLabs", radiology: "visitsRadiology", income: "income", expense: "expense",
+  payroll: "payroll", auditlog: "auditLog",
+});
+function getFirestorePageState(key) {
+  if (!FIRESTORE_PAGE_STATE[key]) {
+    FIRESTORE_PAGE_STATE[key] = { currentPage: 1, cursors: { 1: null }, pages: {}, hasMore: {} };
+  }
+  return FIRESTORE_PAGE_STATE[key];
+}
+function pageQueryOptions(key, page) {
+  const options = { pageSize: PAGE_SIZE, cursor: getFirestorePageState(key).cursors[page] || null };
+  const monthKey = state.monthStateKey === "incomeMonth" || state.monthStateKey === "expenseMonth" ? state[state.monthStateKey] : null;
+  if ((key === "income" || key === "expense") && monthKey) {
+    const [year, month] = String(monthKey).split("-").map(Number);
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    options.where = [
+      { field: "date", op: ">=", value: `${monthKey}-01` },
+      { field: "date", op: "<=", value: `${monthKey}-${String(lastDay).padStart(2, "0")}` },
+    ];
+  }
+  return options;
+}
+async function loadFirestorePage(key, page = 1, options = {}) {
+  if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getPage) return false;
+  const pageState = getFirestorePageState(key);
+  let queryOptions = pageQueryOptions(key, page);
+  const querySignature = JSON.stringify(queryOptions.where || []);
+  if (pageState.querySignature !== querySignature) {
+    pageState.querySignature = querySignature;
+    pageState.currentPage = 1;
+    pageState.cursors = { 1: null };
+    pageState.pages = {};
+    pageState.hasMore = {};
+    page = 1;
+    queryOptions = pageQueryOptions(key, page);
+  }
+  if (!options.force && pageState.pages[page]) {
+    DB[key] = pageState.pages[page].slice();
+    pageState.currentPage = page;
+    return true;
+  }
+  const result = await window.MitaliFirebase.getPage(key, Object.assign(queryOptions, options));
+  pageState.pages[page] = Array.isArray(result.records) ? result.records.slice() : [];
+  pageState.hasMore[page] = !!result.hasMore;
+  pageState.cursors[page + 1] = result.nextCursor || null;
+  pageState.currentPage = page;
+  DB[key] = pageState.pages[page].slice();
+  PAGE_DATA_LOADED_AT[key] = Date.now();
+  return true;
+}
 function readFallbackForKey(key) {
   if (key === "settings") return DB.settings || { openingBalance: 0 };
   if (key === "categories") return DB.categories || seedCategories();
@@ -1661,7 +1718,7 @@ function readFallbackForKey(key) {
 }
 async function loadKeys(keys, options = {}) {
   await detectStorageMode();
-  const unique = [...new Set((keys || []).filter(Boolean))];
+  const unique = [...new Set((keys || []).filter(Boolean))].filter(key => !SERVER_PAGED_KEYS.has(key));
   if (!unique.length) return;
   const values = await Promise.all(unique.map(key => storeGet(key, readFallbackForKey(key), {
     preferCache: !!options.preferCache,
@@ -1697,19 +1754,33 @@ async function ensurePageDataLoaded(page, options = {}) {
   if (STORAGE_MODE !== "firestore" || !currentUser) return;
   const keys = pageKeys(page);
   if (!keys.length) return;
+  const pagedKeys = keys.filter(key => SERVER_PAGED_KEYS.has(key));
   const now = Date.now();
-  const fresh = !options.force && keys.every(key => PAGE_DATA_LOADED_AT[key] && now - PAGE_DATA_LOADED_AT[key] < READ_CACHE_TTL_MS);
+  const nonPagedKeys = keys.filter(key => !SERVER_PAGED_KEYS.has(key));
+  const pagedReady = pagedKeys.length === 0 || pagedKeys.every(key => {
+    const pageState = getFirestorePageState(key);
+    const signature = JSON.stringify(pageQueryOptions(key, 1).where || []);
+    return pageState.pages[1] && pageState.querySignature === signature;
+  });
+  const fresh = !options.force
+    && nonPagedKeys.every(key => PAGE_DATA_LOADED_AT[key] && now - PAGE_DATA_LOADED_AT[key] < READ_CACHE_TTL_MS)
+    && pagedReady;
   if (fresh) return;
   const queueKey = [...keys].sort().join(",");
   if (!PAGE_DATA_LOADING.has(queueKey)) {
-    const task = loadKeys(keys, { preferCache: false, requireServer: !!options.requireServer })
-      .then(() => keys.forEach(key => { PAGE_DATA_LOADED_AT[key] = Date.now(); }))
+    const task = Promise.all([
+      loadKeys(nonPagedKeys, { preferCache: false, requireServer: !!options.requireServer }),
+      ...pagedKeys.map(key => loadFirestorePage(key, 1, { force: !!options.force })),
+    ])
+      .then(() => nonPagedKeys.forEach(key => { PAGE_DATA_LOADED_AT[key] = Date.now(); }))
       .finally(() => PAGE_DATA_LOADING.delete(queueKey));
     PAGE_DATA_LOADING.set(queueKey, task);
   }
   try {
     await PAGE_DATA_LOADING.get(queueKey);
-    if (page === "income" || page === "ledger" || page === "dashboard") await reconcileVisitIncomeLinks();
+    // Page reads are now capped at 50 for large tables. Income links are
+    // maintained at visit save/edit/delete time; opening Dashboard or Ledger
+    // must not trigger a full five-collection reconciliation read.
   }
   catch (error) { console.warn("Page data refresh failed:", page, error && (error.code || error.message)); return; }
   if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
@@ -2401,7 +2472,7 @@ console.log("Computation layer ready.");
 // ======================================================================
 // تكامل Firestore (قاعدة البيانات الرئيسية الوحيدة)
 // ======================================================================
-const APP_VERSION = "v1.3.46";
+const APP_VERSION = "v1.3.48";
 const APP_RELEASE_NOTES = "تقليل قراءات Firestore • تحميل البيانات عند الحاجة • حماية الحصة المجانية مع كاش محلي";
 const FIRESTORE_MIGRATION_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","auditLog","labExpenses","categories","specialties","settings"];
 // Restore إداري صريح: الحذف هنا ناتج عن قائمة النسخة الاحتياطية نفسها، وليس
@@ -3264,6 +3335,29 @@ function waIconButtonHTML(phone, dataAttr, key) {
 // وملحوظًا خصوصًا على الموبايلات المتوسطة. الحل: تقسيم صفحات بسيط - نعرض 50 صف
 // فقط فى كل مرة بدل الجدول كامل، مع أزرار تنقّل واضحة وعداد "يعرض X-Y من Z".
 const PAGE_SIZE = 50;
+function pageKeyDatabaseKey(pageKey) {
+  if (PAGE_PRIMARY_KEY[pageKey]) return PAGE_PRIMARY_KEY[pageKey];
+  if (pageKey === "ledger") return null;
+  if (pageKey === "money_income") return "income";
+  if (pageKey === "money_expense") return "expense";
+  if (pageKey === "payroll") return "payroll";
+  if (pageKey === "auditLog") return "auditLog";
+  const visitMatch = /^visits_(clinic|dental|operations|labs|radiology)$/.exec(pageKey || "");
+  return visitMatch ? PAGE_PRIMARY_KEY[visitMatch[1]] : null;
+}
+function firestorePageInfo(pageKey, list) {
+  const dbKey = pageKeyDatabaseKey(pageKey);
+  if (STORAGE_MODE !== "firestore" || !dbKey || !getFirestorePageState(dbKey).pages[1]) return null;
+  const pageState = getFirestorePageState(dbKey);
+  const current = pageState.currentPage || state.tablePage[pageKey] || 1;
+  state.tablePage[pageKey] = current;
+  const records = Array.isArray(list) ? list : [];
+  return {
+    server: true, pageItems: records, current, total: records.length,
+    start: records.length ? 1 : 0, end: records.length,
+    hasMore: !!pageState.hasMore[current], totalPages: current + (pageState.hasMore[current] ? 1 : 0),
+  };
+}
 function paginateList(list, pageKey) {
   const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
   let current = state.tablePage[pageKey] || 1;
@@ -3274,6 +3368,20 @@ function paginateList(list, pageKey) {
   return { pageItems: list.slice(start, start + PAGE_SIZE), current, totalPages, total: list.length, start: list.length ? start + 1 : 0, end: Math.min(start + PAGE_SIZE, list.length) };
 }
 function paginationControlsHTML(pageKey, pageInfo) {
+  if (pageInfo.server) {
+    if (pageInfo.total === 0 && pageInfo.current === 1 && !pageInfo.hasMore) return "";
+    if (pageInfo.current === 1 && !pageInfo.hasMore && pageInfo.total < PAGE_SIZE) return "";
+    return `
+      <div class="pagination-bar" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:12px 4px 4px;">
+        <span class="hint">يعرض ${pageInfo.start}-${pageInfo.end}</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button type="button" class="btn ghost sm" data-page-nav="${pageKey}" data-page-to="1" ${pageInfo.current === 1 ? "disabled" : ""}>&laquo; الأولى</button>
+          <button type="button" class="btn ghost sm" data-page-nav="${pageKey}" data-page-to="${pageInfo.current - 1}" ${pageInfo.current === 1 ? "disabled" : ""}>السابق</button>
+          <span style="font-size:12.5px; font-weight:700; padding:0 6px;">صفحة ${pageInfo.current}</span>
+          <button type="button" class="btn ghost sm" data-page-nav="${pageKey}" data-page-to="${pageInfo.current + 1}" ${pageInfo.hasMore ? "" : "disabled"}>التالي</button>
+        </div>
+      </div>`;
+  }
   if (pageInfo.total <= PAGE_SIZE) return "";
   return `
     <div class="pagination-bar" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:12px 4px 4px;">
@@ -3288,9 +3396,25 @@ function paginationControlsHTML(pageKey, pageInfo) {
     </div>`;
 }
 function bindPaginationEvents(c) {
-  c.querySelectorAll("[data-page-nav]").forEach(b => b.addEventListener("click", () => {
-    state.tablePage[b.dataset.pageNav] = Number(b.dataset.pageTo) || 1;
-    route();
+  c.querySelectorAll("[data-page-nav]").forEach(b => b.addEventListener("click", async () => {
+    const pageKey = b.dataset.pageNav;
+    const target = Number(b.dataset.pageTo) || 1;
+    const dbKey = pageKeyDatabaseKey(pageKey);
+    if (!dbKey || STORAGE_MODE !== "firestore") {
+      state.tablePage[pageKey] = target;
+      route();
+      return;
+    }
+    b.disabled = true;
+    try {
+      await loadFirestorePage(dbKey, target);
+      state.tablePage[pageKey] = target;
+      route();
+    } catch (error) {
+      console.error("Paged Firestore read failed:", pageKey, error);
+      showToast("⚠️ تعذّر تحميل الصفحة التالية من السحابة", 5000);
+      b.disabled = false;
+    }
   }));
 }
 
@@ -3514,7 +3638,7 @@ function renderVisitsPage(kind) {
   const granularity = state[granKey], filterValue = state[valKey];
   const displayList = list.filter(v => periodMatches(v.date, granularity, filterValue));
   const sortedVisits = sortByEntryOrderDesc(displayList);
-  const visitsPg = paginateList(sortedVisits, `visits_${kind}`);
+  const visitsPg = firestorePageInfo(`visits_${kind}`, sortedVisits) || paginateList(sortedVisits, `visits_${kind}`);
 
   c.innerHTML = `
     ${(editing ? canEdit : canAdd) ? `
@@ -3852,7 +3976,7 @@ function renderServiceVisitsPage(kind) {
   const granularity = state[granKey], filterValue = state[valKey];
   const displayList = list.filter(v => periodMatches(v.date, granularity, filterValue));
   const sortedVisits = sortByEntryOrderDesc(displayList);
-  const visitsPg = paginateList(sortedVisits, `visits_${kind}`);
+  const visitsPg = firestorePageInfo(`visits_${kind}`, sortedVisits) || paginateList(sortedVisits, `visits_${kind}`);
 
   c.innerHTML = `
     ${(editing ? canEdit : canAdd) ? `
@@ -4566,7 +4690,7 @@ function renderMoneyPage(kind) {
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
   const totalAmt = filteredList.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const sortedMoney = sortByEntryOrderDesc(filteredList);
-  const moneyPg = paginateList(sortedMoney, `money_${kind}`);
+  const moneyPg = firestorePageInfo(`money_${kind}`, sortedMoney) || paginateList(sortedMoney, `money_${kind}`);
 
   c.innerHTML = `
     <div class="card no-print" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -5031,7 +5155,7 @@ function renderPayroll() {
   const totalPaid = filteredList.reduce((s, x) => s + payrollPaidAmount(x), 0);
   const totalDue = filteredList.reduce((s, x) => s + Math.max(0, (Number(x.amount) || 0) - payrollPaidAmount(x)), 0);
   const sortedPayroll = sortByEntryOrderDesc(filteredList, x => `${x.month || ""}-${String(x.day || 0).padStart(2, "0")}`);
-  const payrollPg = paginateList(sortedPayroll, "payroll");
+  const payrollPg = firestorePageInfo("payroll", sortedPayroll) || paginateList(sortedPayroll, "payroll");
 
   c.innerHTML = `
     <div class="grid grid-3" style="margin-bottom:16px;">
@@ -6856,7 +6980,7 @@ function renderAuditLogPage() {
     (!dateFilter || r.date === dateFilter) &&
     (!termFilter || (r.action || "").toLowerCase().includes(termFilter) || (r.page || "").toLowerCase().includes(termFilter))
   );
-  const shown = paginateList(filtered, "auditLog");
+  const shown = firestorePageInfo("auditLog", filtered) || paginateList(filtered, "auditLog");
   const users = DB.staffAccounts || [];
 
   c.innerHTML = `
@@ -7411,8 +7535,8 @@ const PAGE_REALTIME_KEYS = {
   dashboard: ["income", "expense", ...REVENUE_VISIT_DB_KEYS],
   clinic: ["visitsClinic"], dental: ["visitsDental"],
   operations: ["visitsOperations"], labs: ["visitsLabs"], radiology: ["visitsRadiology"],
-  income: ["income", ...REVENUE_VISIT_DB_KEYS], expense: ["expense"], payroll: ["payroll"],
-  ledger: ["income", "expense", "settings", ...REVENUE_VISIT_DB_KEYS],
+  income: ["income"], expense: ["expense"], payroll: ["payroll"],
+  ledger: ["income", "expense", "settings"],
   reports: ["income", "expense", "payroll", ...REVENUE_VISIT_DB_KEYS],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
@@ -7524,17 +7648,28 @@ async function refreshTableFromFirestore(key, changes) {
 function subscribeFirestoreRealtime(page = state.page) {
   if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase || !window.MitaliFirebase.authUser()) return;
   const keys = Array.isArray(PAGE_REALTIME_KEYS[page]) ? PAGE_REALTIME_KEYS[page] : [];
-  const nextPageKey = `${page}:${keys.join(",")}`;
+  const pageCursors = keys.map(key => SERVER_PAGED_KEYS.has(key) ? `${key}:${getFirestorePageState(key).currentPage || 1}` : key).join(",");
+  const nextPageKey = `${page}:${pageCursors}`;
   if (realtimePageKey === nextPageKey && (firestoreRealtimeUnsubs.size || cloudWipeUnsub)) return;
   cleanupRealtimeChannels("page-change");
   realtimePageKey = nextPageKey;
   subscribeCloudWipeControl();
   keys.forEach((key) => {
     try {
-      const unsubscribe = window.MitaliFirebase.subscribe(key, (changes) => refreshTableFromFirestore(key, changes), (error) => {
-        console.warn("Firestore listener error for", key, error);
-        firestoreRealtimeUnsubs.delete(key);
-      });
+      const currentPage = SERVER_PAGED_KEYS.has(key) ? (getFirestorePageState(key).currentPage || 1) : 1;
+      const listenerOptions = SERVER_PAGED_KEYS.has(key)
+        ? Object.assign(pageQueryOptions(key, currentPage), { pageSize: PAGE_SIZE })
+        : null;
+      const listener = SERVER_PAGED_KEYS.has(key) && window.MitaliFirebase.subscribePage
+        ? window.MitaliFirebase.subscribePage(key, listenerOptions, (changes) => refreshTableFromFirestore(key, changes), (error) => {
+            console.warn("Firestore paged listener error for", key, error);
+            firestoreRealtimeUnsubs.delete(key);
+          })
+        : window.MitaliFirebase.subscribe(key, (changes) => refreshTableFromFirestore(key, changes), (error) => {
+            console.warn("Firestore listener error for", key, error);
+            firestoreRealtimeUnsubs.delete(key);
+          });
+      const unsubscribe = listener;
       if (typeof unsubscribe === "function") firestoreRealtimeUnsubs.set(key, unsubscribe);
     } catch (e) {
       console.error("Firestore subscribe failed for", key, e);

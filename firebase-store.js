@@ -342,6 +342,61 @@
     });
   }
 
+  // Server-side pagination for large operational collections. This API is
+  // intentionally read-only; existing Local-first write and Outbox paths are
+  // unchanged.
+  const PAGE_QUERY_CONFIG = Object.freeze({
+    visitsClinic: { primary: "date" }, visitsDental: { primary: "date" },
+    visitsOperations: { primary: "date" }, visitsLabs: { primary: "date" },
+    visitsRadiology: { primary: "date" }, income: { primary: "date" },
+    expense: { primary: "date" }, payroll: { primary: "month" },
+    labExpenses: { primary: "month" }, auditLog: { primary: "timestamp" },
+  });
+  function pageQuery(key, options = {}) {
+    const config = PAGE_QUERY_CONFIG[key];
+    if (!config) throw new Error(`No safe page query configured for: ${key}`);
+    const pageSize = Math.min(Math.max(Number(options.pageSize) || 50, 1), 50);
+    const orderField = options.orderField || config.primary;
+    let query = db.collection(collectionName(key));
+    const filters = Array.isArray(options.where) ? options.where : (options.where ? [options.where] : []);
+    for (const filter of filters) {
+      if (filter && filter.field && filter.op && filter.value !== undefined) query = query.where(filter.field, filter.op, filter.value);
+    }
+    query = query.orderBy(orderField, "desc")
+      .orderBy(window.firebase.firestore.FieldPath.documentId(), "desc")
+      .limit(pageSize);
+    const cursor = options.cursor;
+    if (cursor && cursor.primaryValue !== undefined && cursor.documentId) {
+      query = query.startAfter(cursor.primaryValue, String(cursor.documentId));
+    }
+    return { query, pageSize, orderField };
+  }
+  async function getPage(key, options = {}) {
+    await ready();
+    const { query, pageSize, orderField } = pageQuery(key, options);
+    const snap = options.source ? await query.get({ source: options.source }) : await query.get();
+    recordReadMetric(key, snap.docs.length);
+    const records = snap.docs.map(doc => Object.assign({ id: doc.id }, doc.data()));
+    const last = snap.docs[snap.docs.length - 1];
+    return {
+      records,
+      pageSize,
+      hasMore: records.length === pageSize,
+      nextCursor: last ? { primaryValue: last.get(orderField), documentId: last.id } : null,
+    };
+  }
+  function subscribePage(key, options, onChange, onError) {
+    init();
+    const { query } = pageQuery(key, options || {});
+    return query.onSnapshot(
+      snap => onChange(snap.docChanges().map(change => ({
+        type: change.type,
+        record: Object.assign({ id: change.doc.id }, change.doc.data()),
+      }))),
+      error => onError && onError(error)
+    );
+  }
+
   async function getValue(key, fallback, options = {}) {
     const records = await getTable(key, options);
     if (!records.length) return fallback;
@@ -451,6 +506,7 @@
     init,
     ready,
     getTable,
+    getPage,
     setTable,
     getValue,
     getReadMetrics,
@@ -460,6 +516,7 @@
     upsertRecords,
     deleteRecords,
     subscribe,
+    subscribePage,
     authEmailForUsername,
     signInWithUsername,
     createAuthUserForUsername,

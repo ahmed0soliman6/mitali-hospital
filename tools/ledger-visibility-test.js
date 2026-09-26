@@ -12,7 +12,7 @@ const moneyBlock = source.slice(moneyStart, moneyEnd);
 assert.match(moneyBlock, /if \(!state\[monthStateKey\]\) state\[monthStateKey\] = todayISO\(\)\.slice\(0, 7\);/);
 assert.match(moneyBlock, /const filteredList = selectedMonth === "all" \? list : list\.filter/);
 assert.match(moneyBlock, /const totalAmt = filteredList\.reduce/);
-assert.match(moneyBlock, /const moneyPg = paginateList\(sortedMoney, `money_\$\{kind\}`\);/);
+assert.match(moneyBlock, /const moneyPg = firestorePageInfo\(`money_\$\{kind\}`, sortedMoney\) \|\| paginateList/);
 assert.doesNotMatch(moneyBlock, /slice\(0\s*,\s*35\)/);
 assert.doesNotMatch(moneyBlock, /slice\(0\s*,\s*50\)/);
 
@@ -21,7 +21,7 @@ for (const key of ['visitsClinic', 'visitsDental', 'visitsOperations', 'visitsLa
   assert.match(sourceBlock, new RegExp(key));
 }
 assert.match(source, /function allPatientVisits\(\) \{\s*return visitsFromSources\(VISIT_SOURCE_DEFINITIONS\);/);
-assert.match(source, /income: \[\.\.\.REVENUE_VISIT_DB_KEYS, "income"\], expense: \["expense"\]/);
+assert.match(source, /income: \["income"\], expense: \["expense"\]/);
 assert.match(source, /const list = isIncome \? DB\.income : DB\.expense;/);
 
 console.log('PASS ledger-visibility-test: income and expense default to the current month, retain complete totals, paginate only for display, and all five visit sources are included.');

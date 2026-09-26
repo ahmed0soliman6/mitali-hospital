@@ -27,6 +27,7 @@ assert.match(source, /function allPatientVisits\(\) \{\s*return visitsFromSource
 const realtime = source.match(/const PAGE_REALTIME_KEYS = \{([\s\S]*?)\n\};/);
 assert.ok(realtime, 'PAGE_REALTIME_KEYS must be declared');
 assert.match(realtime[1], /dashboard: \["income", "expense", \.\.\.REVENUE_VISIT_DB_KEYS\]/);
+assert.match(realtime[1], /income: \["income"\]/);
 assert.match(realtime[1], /settings: \["doctors", "employees", "settings", "categories", "specialties"\]/);
 assert.match(realtime[1], /outstandingBalances: \["doctors", \.\.\.REVENUE_VISIT_DB_KEYS\]/);
 assert.doesNotMatch(realtime[1], /staffAccounts/);
