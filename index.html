@@ -1799,7 +1799,8 @@ async function preloadFinancialSummaries(page) {
   }
   if (page === "expense") months.add(state.expenseMonth || todayISO().slice(0, 7));
   if (page === "ledger") {
-    if (state.ledgerMonth && state.ledgerMonth !== "all") months.add(state.ledgerMonth);
+    const lm = state.ledgerMonth || todayISO().slice(0, 7);
+    if (lm !== "all") months.add(lm);
   }
   if (page === "reports") months.add(state.closingMonth || todayISO().slice(0, 7));
   if (page === "reports") {
@@ -5222,8 +5223,8 @@ function renderLedger() {
   const totalIn = Number(allFinancialSummary.totalIncome || allFinancialSummary.income.total || 0);
   const totalOut = Number(allFinancialSummary.totalExpense || allFinancialSummary.expense.total || 0);
 
-  // دفتر الخزينة يحسب ويعرض كل الحركات افتراضيًا، مع إبقاء فلتر الشهر اختياريًا.
-  if (!state.ledgerMonth) state.ledgerMonth = "all";
+  // دفتر الخزينة يعرض حركات الشهر الحالي افتراضيًا، مع إبقاء خيار "كل الشهور" اختياريًا.
+  if (!state.ledgerMonth) state.ledgerMonth = todayISO().slice(0, 7);
   const monthOptions = buildMonthOptions(allRows.map(r => r.date));
   const selectedMonth = state.ledgerMonth;
   const monthRows = selectedMonth === "all" ? allRows : allRows.filter(r => (r.date || "").startsWith(selectedMonth));
