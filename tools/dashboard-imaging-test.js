@@ -7,7 +7,7 @@ assert.match(source, /function dashboardRowsForPeriod\(rows, period\)/, 'dashboa
 assert.match(source, /function periodFinancials\(period\)/, 'dashboard must calculate income and expense together');
 assert.match(source, /const incomeRows = dashboardRowsForPeriod\(DB\.income, period\)/, 'dashboard income must come from the full income ledger');
 assert.match(source, /const expenseRows = dashboardRowsForPeriod\(DB\.expense, period\)/, 'dashboard expense must come from the full expense ledger');
-assert.match(source, /const totalRevenue = DB\.income\.reduce/, 'all-period revenue must include manual and linked income');
+assert.match(source, /const allFinancialSummary = cachedFinancialSummary\("all"\)/, 'all-period revenue must use the financial summary');
 assert.match(source, /const dayRevenue = days\.map\(d => DB\.income\.filter\(x => x\.date === d\)/, 'seven-day chart must include all income entries');
 assert.match(source, /backfillIncomeLinks\(DB\.visitsOperations, "operations"\)/, 'legacy operations visits must be linked to income');
 assert.match(source, /backfillIncomeLinks\(DB\.visitsLabs, "labs"\)/, 'legacy lab visits must be linked to income');

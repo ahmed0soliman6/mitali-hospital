@@ -202,6 +202,20 @@
     return body;
   }
 
+  async function getFinancialSummary(month = "all") {
+    init();
+    if (!auth || !auth.currentUser) throw new Error("Firebase user is not authenticated");
+    const token = await auth.currentUser.getIdToken();
+    const value = month === "all" ? "all" : String(month || "all");
+    const response = await fetchWithTimeout(apiUrl(`/api/financial/summary?month=${encodeURIComponent(value)}`), {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-store", "Authorization": `Bearer ${token}` },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(body.error || "financial summary failed"), { code: body.error });
+    return body;
+  }
+
   async function adminCreateAccount(payload) {
     return adminAccountRequest(Object.assign({ action: 'create' }, payload || {}));
   }
@@ -522,6 +536,7 @@
     createAuthUserForUsername,
     changePassword,
     adminAccountRequest,
+    getFinancialSummary,
     adminCreateAccount,
     configureManagerRecovery,
     recoverManagerPassword,

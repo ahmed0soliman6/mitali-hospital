@@ -1651,6 +1651,47 @@ const PAGE_DATA_KEYS = {
 const PAGE_DATA_LOADING = new Map();
 const PAGE_DATA_LOADED_AT = Object.create(null);
 const FIRESTORE_PAGE_STATE = Object.create(null);
+const FINANCIAL_SUMMARY_CACHE = Object.create(null);
+const FINANCIAL_SUMMARY_LOADING = new Map();
+function cachedFinancialSummary(month = "all") {
+  if (FINANCIAL_SUMMARY_CACHE[month]) return FINANCIAL_SUMMARY_CACHE[month];
+  const income = month === "all" ? DB.income : DB.income.filter(x => (x.date || "").startsWith(month));
+  const expense = month === "all" ? DB.expense : DB.expense.filter(x => (x.date || "").startsWith(month));
+  const totalIncome = income.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  const totalExpense = expense.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  return { month, income: { total: totalIncome, count: income.length }, expense: { total: totalExpense, count: expense.length }, totalIncome, totalExpense, net: totalIncome - totalExpense };
+}
+async function getFinancialSummary(month = "all", options = {}) {
+  if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getFinancialSummary) return cachedFinancialSummary(month);
+  const key = String(month || "all");
+  if (!options.force && FINANCIAL_SUMMARY_CACHE[key]) return FINANCIAL_SUMMARY_CACHE[key];
+  if (!FINANCIAL_SUMMARY_LOADING.has(key)) {
+    FINANCIAL_SUMMARY_LOADING.set(key, window.MitaliFirebase.getFinancialSummary(key).then(summary => {
+      FINANCIAL_SUMMARY_CACHE[key] = summary;
+      return summary;
+    }).finally(() => FINANCIAL_SUMMARY_LOADING.delete(key)));
+  }
+  return FINANCIAL_SUMMARY_LOADING.get(key);
+}
+function invalidateFinancialSummaries() {
+  Object.keys(FINANCIAL_SUMMARY_CACHE).forEach(key => delete FINANCIAL_SUMMARY_CACHE[key]);
+}
+async function preloadFinancialSummaries(page) {
+  if (STORAGE_MODE !== "firestore" || !currentUser) return;
+  const months = new Set(["all"]);
+  if (page === "income") months.add(state.incomeMonth || todayISO().slice(0, 7));
+  if (page === "expense") months.add(state.expenseMonth || todayISO().slice(0, 7));
+  if (page === "reports") months.add(state.closingMonth || todayISO().slice(0, 7));
+  if (page === "reports") {
+    const count = state.reportMonthsRange === "all" ? 24 : (Number(state.reportMonthsRange) || 6);
+    const now = new Date();
+    for (let i = 0; i < count; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.add(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
+    }
+  }
+  await Promise.all([...months].map(month => getFinancialSummary(month, { force: true })));
+}
 const SERVER_PAGED_KEYS = new Set([
   "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology",
   "income", "expense", "payroll", "labExpenses", "auditLog",
@@ -1778,6 +1819,7 @@ async function ensurePageDataLoaded(page, options = {}) {
   }
   try {
     await PAGE_DATA_LOADING.get(queueKey);
+    await preloadFinancialSummaries(page);
     // Page reads are now capped at 50 for large tables. Income links are
     // maintained at visit save/edit/delete time; opening Dashboard or Ledger
     // must not trigger a full five-collection reconciliation read.
@@ -1903,6 +1945,7 @@ async function persist(key) {
     await storeSet(key, map[key]);
   } finally {
     PENDING_WRITES--;
+    if (key === "income" || key === "expense") invalidateFinancialSummaries();
     DATA_VERSION++;
     renderStorageIndicator();
   }
@@ -2166,6 +2209,14 @@ function dashboardRowsForPeriod(rows, period) {
   return rows.filter(r => r.date === t);
 }
 function periodFinancials(period) {
+  if (period === "month") {
+    const summary = cachedFinancialSummary(todayISO().slice(0, 7));
+    return { incomeRows: [], expenseRows: [], income: summary.income.total, expense: summary.expense.total, incomeCount: summary.income.count, expenseCount: summary.expense.count };
+  }
+  if (period === "year") {
+    const summary = cachedFinancialSummary("all");
+    return { incomeRows: [], expenseRows: [], income: summary.income.total, expense: summary.expense.total, incomeCount: summary.income.count, expenseCount: summary.expense.count };
+  }
   const incomeRows = dashboardRowsForPeriod(DB.income, period);
   const expenseRows = dashboardRowsForPeriod(DB.expense, period);
   return {
@@ -2282,9 +2333,8 @@ function daysSinceLastBackup() {
 }
 function currentBalance() {
   const opening = Number(DB.settings.openingBalance) || 0;
-  const inc = DB.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const exp = DB.expense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  return opening + inc - exp;
+  const summary = cachedFinancialSummary("all");
+  return opening + Number(summary.totalIncome || summary.income.total || 0) - Number(summary.totalExpense || summary.expense.total || 0);
 }
 // تاريخ حركة الخزينة المقابلة لمرتب مدفوع: يستخدم يوم الصرف إن وُجد، وإلا تاريخ اليوم (يوم اعتماد الدفع فعليًا)
 function payrollExpenseDate(rec) {
@@ -2435,8 +2485,9 @@ function monthlyClosingData(ym) {
   incomeThisMonth.forEach(x => { incomeByCat[x.category || "غير مصنّف"] = (incomeByCat[x.category || "غير مصنّف"] || 0) + (Number(x.amount) || 0); });
   const expenseByCat = {};
   expenseThisMonth.forEach(x => { expenseByCat[x.category || "غير مصنّف"] = (expenseByCat[x.category || "غير مصنّف"] || 0) + (Number(x.amount) || 0); });
-  const totalIncome = incomeThisMonth.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const totalExpense = expenseThisMonth.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const financialSummary = cachedFinancialSummary(ym);
+  const totalIncome = Number(financialSummary.totalIncome || financialSummary.income.total || 0);
+  const totalExpense = Number(financialSummary.totalExpense || financialSummary.expense.total || 0);
 
   const rows = ledgerRows();
   const beforeMonth = rows.filter(r => (r.date || "") < ym + "-01");
@@ -3448,8 +3499,9 @@ function renderDashboard() {
   const c = document.getElementById("content");
   const visits = allRevenueVisits();
   const today = todayISO();
-  const totalRevenue = DB.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const totalExpense = DB.expense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const allFinancialSummary = cachedFinancialSummary("all");
+  const totalRevenue = Number(allFinancialSummary.totalIncome || allFinancialSummary.income.total || 0);
+  const totalExpense = Number(allFinancialSummary.totalExpense || allFinancialSummary.expense.total || 0);
   const balance = currentBalance();
   const overdue = visits.filter(v => visitRemaining(v) > 0).length;
   const revenueVisits = allRevenueVisits();
@@ -4691,7 +4743,9 @@ function renderMoneyPage(kind) {
   const monthOptions = buildMonthOptions(list.map(x => x.date));
   const selectedMonth = state[monthStateKey];
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
-  const totalAmt = filteredList.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const summary = cachedFinancialSummary(selectedMonth);
+  const totalAmt = isIncome ? Number(summary.totalIncome || summary.income.total || 0) : Number(summary.totalExpense || summary.expense.total || 0);
+  const totalCount = isIncome ? Number(summary.income.count || 0) : Number(summary.expense.count || 0);
   const sortedMoney = sortByEntryOrderDesc(filteredList);
   const moneyPg = firestorePageInfo(`money_${kind}`, sortedMoney) || paginateList(sortedMoney, `money_${kind}`);
 
@@ -4706,8 +4760,8 @@ function renderMoneyPage(kind) {
 
     <div class="grid grid-3" style="margin-bottom:16px;">
       <div class="card kpi"><div class="label">إجمالي ${isIncome ? "الوارد" : "المنصرف"} (${selectedMonth === "all" ? "كل الشهور" : monthLabel(selectedMonth)})</div><div class="value ${isIncome ? "income" : "expense"}">${fmt(totalAmt)} ج.م</div></div>
-      <div class="card kpi"><div class="label">عدد العمليات</div><div class="value">${fmtInt(filteredList.length)}</div></div>
-      <div class="card kpi"><div class="label">متوسط قيمة العملية</div><div class="value">${fmt(filteredList.length ? totalAmt / filteredList.length : 0)} ج.م</div></div>
+      <div class="card kpi"><div class="label">عدد العمليات</div><div class="value">${fmtInt(totalCount)}</div></div>
+      <div class="card kpi"><div class="label">متوسط قيمة العملية</div><div class="value">${fmt(totalCount ? totalAmt / totalCount : 0)} ج.م</div></div>
     </div>
 
     ${(editing ? canEdit : canAdd) ? `
@@ -4979,8 +5033,9 @@ console.log("Money page ready.");
 function renderLedger() {
   const c = document.getElementById("content");
   const allRows = ledgerRows();
-  const totalIn = DB.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const totalOut = DB.expense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const allFinancialSummary = cachedFinancialSummary("all");
+  const totalIn = Number(allFinancialSummary.totalIncome || allFinancialSummary.income.total || 0);
+  const totalOut = Number(allFinancialSummary.totalExpense || allFinancialSummary.expense.total || 0);
 
   // دفتر الخزينة يحسب ويعرض كل الحركات افتراضيًا، مع إبقاء فلتر الشهر اختياريًا.
   if (!state.ledgerMonth) state.ledgerMonth = "all";
@@ -5010,8 +5065,9 @@ function renderLedger() {
   const ledgerPg = paginateList(rowsNewestFirst, "ledger");
 
   // الوارد والمنصرف والرصيد الحالى لكل شهر منفصل (حسب الشهر المختار من القائمة المنسدلة)
-  const monthIn = monthRows.filter(r => r.type === "وارد").reduce((s, r) => s + r.amount, 0);
-  const monthOut = monthRows.filter(r => r.type === "منصرف").reduce((s, r) => s + r.amount, 0);
+  const monthFinancialSummary = cachedFinancialSummary(selectedMonth);
+  const monthIn = Number(monthFinancialSummary.totalIncome || monthFinancialSummary.income.total || 0);
+  const monthOut = Number(monthFinancialSummary.totalExpense || monthFinancialSummary.expense.total || 0);
   let monthEndBalance;
   if (selectedMonth === "all") {
     monthEndBalance = currentBalance();
@@ -5512,8 +5568,9 @@ function renderReports() {
 
   const monthlyRows = monthKeys.map(({ ym, y, mIdx }) => {
     const rev = visits.filter(v => (v.date || "").startsWith(ym)).reduce((s, v) => s + (Number(v.paid) || 0), 0);
-    const inc = DB.income.filter(x => (x.date || "").startsWith(ym)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
-    const exp = DB.expense.filter(x => (x.date || "").startsWith(ym)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const financialSummary = cachedFinancialSummary(ym);
+    const inc = Number(financialSummary.totalIncome || financialSummary.income.total || 0);
+    const exp = Number(financialSummary.totalExpense || financialSummary.expense.total || 0);
     const count = visits.filter(v => (v.date || "").startsWith(ym)).length;
     const label = y === now2.getFullYear() ? monthNames[mIdx] : `${monthNames[mIdx]} ${y}`;
     return { name: label, rev, inc, exp, net: inc - exp, count };

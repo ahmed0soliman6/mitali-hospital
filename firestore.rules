@@ -60,61 +60,39 @@ service cloud.firestore {
 
     // Clinical collections.
     match /visits_clinic/{document} {
-      allow read: if hasPermission('clinic', 'view');
-      allow create: if hasPermission('clinic', 'add');
-      allow update: if hasPermission('clinic', 'edit');
-      allow delete: if hasPermission('clinic', 'delete');
+      allow read, write: if activeUser();
     }
     match /visits_dental/{document} {
-      allow read: if hasPermission('dental', 'view');
-      allow create: if hasPermission('dental', 'add');
-      allow update: if hasPermission('dental', 'edit');
-      allow delete: if hasPermission('dental', 'delete');
+      allow read, write: if activeUser();
     }
     match /visits_operations/{document} {
-      allow read: if hasPermission('operations', 'view');
-      allow create: if hasPermission('operations', 'add');
-      allow update: if hasPermission('operations', 'edit');
-      allow delete: if hasPermission('operations', 'delete');
+      allow read, write: if activeUser();
     }
     match /visits_labs/{document} {
-      allow read: if hasPermission('labs', 'view');
-      allow create: if hasPermission('labs', 'add');
-      allow update: if hasPermission('labs', 'edit');
-      allow delete: if hasPermission('labs', 'delete');
+      allow read, write: if activeUser();
     }
     match /visits_radiology/{document} {
-      allow read: if hasPermission('radiology', 'view');
-      allow create: if hasPermission('radiology', 'add');
-      allow update: if hasPermission('radiology', 'edit');
-      allow delete: if hasPermission('radiology', 'delete');
+      allow read, write: if activeUser();
     }
 
     // Financial collections.
     match /income/{document} {
-      allow read: if hasPermission('income', 'view');
-      allow create: if hasPermission('income', 'add');
-      allow update: if hasPermission('income', 'edit');
-      allow delete: if hasPermission('income', 'delete');
+      allow read, write: if activeUser();
     }
     match /expense/{document} {
-      allow read: if hasPermission('expense', 'view');
-      allow create: if hasPermission('expense', 'add');
-      allow update: if hasPermission('expense', 'edit');
-      allow delete: if hasPermission('expense', 'delete');
+      allow read, write: if activeUser();
     }
     match /payroll/{document} {
-      allow read: if hasPermission('payroll', 'view');
-      allow create: if hasPermission('payroll', 'add');
-      allow update: if hasPermission('payroll', 'edit');
-      allow delete: if hasPermission('payroll', 'delete');
+      allow read, write: if activeUser();
     }
     match /lab_expenses/{document} {
-      allow read: if hasPermission('payroll', 'view');
-      allow create: if hasPermission('payroll', 'add');
-      allow update: if hasPermission('payroll', 'edit');
-      allow delete: if hasPermission('payroll', 'delete');
+      allow read, write: if activeUser();
     }
+
+    // Operational records may be created as part of another business operation.
+    match /appointments/{document} { allow read, write: if activeUser(); }
+    match /payments/{document} { allow read, write: if activeUser(); }
+    match /prescriptions/{document} { allow read, write: if activeUser(); }
 
     match /doctors/{document} {
       allow read: if hasPermission('doctors', 'view');

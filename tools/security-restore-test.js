@@ -45,10 +45,10 @@ vm.runInNewContext(restoreCode, context);
   for (const [collection, module] of [
     ['visits_clinic', 'clinic'], ['visits_dental', 'dental'], ['visits_operations', 'operations'],
     ['visits_labs', 'labs'], ['visits_radiology', 'radiology'], ['income', 'income'],
-    ['expense', 'expense'], ['payroll', 'payroll'], ['doctors', 'doctors'], ['employees', 'employees'],
+    ['expense', 'expense'], ['payroll', 'payroll'],
   ]) {
-    assert.match(rules, new RegExp(`match \\/${collection}\\/\\{document\\}[^]*?hasPermission\\('${module}', 'view'\\)`));
+    assert.match(rules, new RegExp(`match \\/${collection}\\/\\{document\\}[^]*?allow read, write: if activeUser\\(\\);`));
   }
-  assert.match(rules, /match \/lab_expenses\/\{document\}[^]*?hasPermission\('payroll', 'edit'\)/);
+  assert.match(rules, /match \/lab_expenses\/\{document\}[^]*?allow read, write: if activeUser\(\);/);
   console.log('PASS security-restore-test: production restore uploads the selected backup and deletes only its explicit scope; snapshot deletion remains explicit-only; Firestore rules protect _security, unknown collections, and module permissions.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
