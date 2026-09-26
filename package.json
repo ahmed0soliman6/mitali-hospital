@@ -34,11 +34,12 @@
     "test:sync-scenarios": "node tools/sync-scenarios-test.js",
     "test:sync-delete": "node tools/sync-delete-propagation-test.js",
     "test:snapshot-safety": "node tools/snapshot-safety-test.js",
+    "test:security-restore": "node tools/security-restore-test.js",
     "test:ledger-visibility-runtime": "node tools/ledger-visibility-test.js",
     "test:ledger-visibility": "node tools/financial-ledger-runtime-test.js",
     "test:visit-income-reconciliation": "node tools/financial-ledger-runtime-test.js",
     "test:storage-mode-restore": "node tools/financial-ledger-runtime-test.js",
-    "test": "npm run check && npm run test:contracts && npm run test:security && npm run test:performance && npm run test:account-delete && npm run test:data-wipe && npm run test:income-form && npm run test:ledger-visibility-runtime && npm run test:ledger-visibility && npm run test:visit-income-reconciliation && npm run test:storage-mode-restore && npm run test:doctor-payroll && npm run test:accounting-consistency && npm run test:doctor-departments && npm run test:dashboard-imaging && npm run test:dashboard-patient-sources && npm run test:settings-after-wipe && npm run test:account-permissions && npm run test:permissions-refresh-race && npm run test:permissions-transport && npm run test:permissions-cache-runtime && npm run test:account-errors && npm run test:read-reduction && npm run test:unified-users-page && npm run test:sync-outbox && npm run test:sync-scenarios && npm run test:sync-delete && npm run test:snapshot-safety",
+    "test": "npm run check && npm run test:contracts && npm run test:security && npm run test:security-restore && npm run test:performance && npm run test:account-delete && npm run test:data-wipe && npm run test:income-form && npm run test:ledger-visibility-runtime && npm run test:ledger-visibility && npm run test:visit-income-reconciliation && npm run test:storage-mode-restore && npm run test:doctor-payroll && npm run test:accounting-consistency && npm run test:doctor-departments && npm run test:dashboard-imaging && npm run test:dashboard-patient-sources && npm run test:settings-after-wipe && npm run test:account-permissions && npm run test:permissions-refresh-race && npm run test:permissions-transport && npm run test:permissions-cache-runtime && npm run test:account-errors && npm run test:read-reduction && npm run test:unified-users-page && npm run test:sync-outbox && npm run test:sync-scenarios && npm run test:sync-delete && npm run test:snapshot-safety",
     "desktop:start": "electron .",
     "desktop:dist": "electron-builder --win nsis --x64 --publish never",
     "desktop:publish": "electron-builder --win nsis --x64 --publish always"

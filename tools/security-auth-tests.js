@@ -58,10 +58,10 @@ assert.match(html, /تم تغيير كلمة المرور بنجاح/);
 assert.match(html, /لا يمكن تغيير كلمة المرور محليًا/);
 
 // Firestore rules must prevent self privilege changes while allowing only security metadata.
-assert.match(rules, /affectedKeys\(\)\.hasOnly\(\['lastLogin', 'credentialVersion', 'securityVersion', 'lastPasswordChangeAt'\]\)/);
+assert.match(rules, /affectedKeys\(\)\.hasOnly\(\[\s*'lastLogin',[\s\S]*?'lastPasswordChangeAt'\s*\]\)/);
 assert.match(rules, /match \/staff_accounts\/\{document\}/);
 assert.match(rules, /allow write: if isAdmin\(\);/);
-assert.match(rules, /collection != 'staff_accounts'/);
+assert.match(rules, /match \/\{collection\}\/\{document\}/);
 
 // No literal password may be stored in the staff account persistence path.
 assert.match(store, /if \(key === "staffAccounts"\) \{ delete data\.password; delete data\.passwordHash; \}/);

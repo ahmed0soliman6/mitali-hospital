@@ -10,18 +10,31 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    function isAdmin() {
-      return signedIn() && userDoc().data.role == 'مدير' && userDoc().data.status != 'موقوف';
-    }
-
     function activeUser() {
-      return signedIn() && userDoc().data.status != 'موقوف';
+      return signedIn()
+        && userDoc().data.status != 'موقوف';
     }
 
+    function isAdmin() {
+      return activeUser() && userDoc().data.role == 'مدير';
+    }
+
+    function hasPermission(moduleKey, actionKey) {
+      return isAdmin()
+        || (activeUser()
+          && userDoc().data.permissions[moduleKey][actionKey] == true);
+    }
+
+    // Account documents are never writable by the ordinary client except for
+    // the narrowly scoped metadata update already used by the signed-in user.
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
       allow create: if isAdmin();
-      allow update: if isAdmin() || (request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastLogin', 'credentialVersion', 'securityVersion', 'lastPasswordChangeAt']));
+      allow update: if isAdmin()
+        || (request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'lastLogin', 'credentialVersion', 'securityVersion', 'lastPasswordChangeAt'
+          ]));
       allow delete: if isAdmin();
     }
 
@@ -30,8 +43,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // staff_accounts مخزن انتقالي قديم؛ لا يُستخدم من العميل ولا تُكتب إليه بيانات جديدة.
+    // Legacy account storage is not a client API.
     match /staff_accounts/{document} {
+      allow read, write: if false;
+    }
+
+    // Recovery material is server-only through /api/admin/account.
+    match /_security/{document} {
       allow read, write: if false;
     }
 
@@ -40,20 +58,104 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Basic authenticated access for the first migration stage. Before enabling
-    // production writes, tighten these rules per module and role.
-    match /{collection}/{document} {
-      allow read, write: if activeUser()
-        && collection != 'users'
-        && collection != 'username_index'
-        && collection != 'settings'
-        && collection != 'staff_accounts'
-        && collection != 'system_control';
+    // Clinical collections.
+    match /visits_clinic/{document} {
+      allow read: if hasPermission('clinic', 'view');
+      allow create: if hasPermission('clinic', 'add');
+      allow update: if hasPermission('clinic', 'edit');
+      allow delete: if hasPermission('clinic', 'delete');
+    }
+    match /visits_dental/{document} {
+      allow read: if hasPermission('dental', 'view');
+      allow create: if hasPermission('dental', 'add');
+      allow update: if hasPermission('dental', 'edit');
+      allow delete: if hasPermission('dental', 'delete');
+    }
+    match /visits_operations/{document} {
+      allow read: if hasPermission('operations', 'view');
+      allow create: if hasPermission('operations', 'add');
+      allow update: if hasPermission('operations', 'edit');
+      allow delete: if hasPermission('operations', 'delete');
+    }
+    match /visits_labs/{document} {
+      allow read: if hasPermission('labs', 'view');
+      allow create: if hasPermission('labs', 'add');
+      allow update: if hasPermission('labs', 'edit');
+      allow delete: if hasPermission('labs', 'delete');
+    }
+    match /visits_radiology/{document} {
+      allow read: if hasPermission('radiology', 'view');
+      allow create: if hasPermission('radiology', 'add');
+      allow update: if hasPermission('radiology', 'edit');
+      allow delete: if hasPermission('radiology', 'delete');
     }
 
+    // Financial collections.
+    match /income/{document} {
+      allow read: if hasPermission('income', 'view');
+      allow create: if hasPermission('income', 'add');
+      allow update: if hasPermission('income', 'edit');
+      allow delete: if hasPermission('income', 'delete');
+    }
+    match /expense/{document} {
+      allow read: if hasPermission('expense', 'view');
+      allow create: if hasPermission('expense', 'add');
+      allow update: if hasPermission('expense', 'edit');
+      allow delete: if hasPermission('expense', 'delete');
+    }
+    match /payroll/{document} {
+      allow read: if hasPermission('payroll', 'view');
+      allow create: if hasPermission('payroll', 'add');
+      allow update: if hasPermission('payroll', 'edit');
+      allow delete: if hasPermission('payroll', 'delete');
+    }
+    match /lab_expenses/{document} {
+      allow read: if hasPermission('payroll', 'view');
+      allow create: if hasPermission('payroll', 'add');
+      allow update: if hasPermission('payroll', 'edit');
+      allow delete: if hasPermission('payroll', 'delete');
+    }
+
+    match /doctors/{document} {
+      allow read: if hasPermission('doctors', 'view');
+      allow create: if hasPermission('doctors', 'add');
+      allow update: if hasPermission('doctors', 'edit');
+      allow delete: if hasPermission('doctors', 'delete');
+    }
+    match /employees/{document} {
+      allow read: if hasPermission('employees', 'view');
+      allow create: if hasPermission('employees', 'add');
+      allow update: if hasPermission('employees', 'edit');
+      allow delete: if hasPermission('employees', 'delete');
+    }
+
+    // Configuration collections are readable by active users for form options;
+    // only the matching module may write them.
     match /settings/{document=**} {
       allow read: if activeUser();
-      allow write: if isAdmin();
+      allow write: if hasPermission('settings', 'edit');
+    }
+    match /categories/{document} {
+      allow read: if activeUser();
+      allow create: if hasPermission('categories', 'add');
+      allow update: if hasPermission('categories', 'edit');
+      allow delete: if hasPermission('categories', 'delete');
+    }
+    match /specialties/{document} {
+      allow read: if activeUser();
+      allow write: if hasPermission('doctors', 'edit') || hasPermission('settings', 'edit');
+    }
+
+    // Audit entries may be appended by active staff; only the administrator may
+    // read or alter the audit trail.
+    match /audit_log/{document} {
+      allow read, update, delete: if isAdmin();
+      allow create: if activeUser();
+    }
+
+    // No broad activeUser read/write fallback. Unknown collections are denied.
+    match /{collection}/{document} {
+      allow read, write: if false;
     }
   }
 }
