@@ -64,7 +64,7 @@ function normalizedFirebaseError(error) {
   if (rawCode === '14' || rawCode.includes('unavailable') || rawMessage.includes('service unavailable')) {
     return { code: 'firebase-unavailable', status: 503, retryable: true };
   }
-  if (rawCode === 'app/invalid-credential' || rawCode === 'server-misconfigured' || rawMessage.includes('invalid-credential') || rawMessage.includes('credentials are not configured')) {
+  if (rawCode === 'app/invalid-credential' || rawCode === 'server-misconfigured' || rawCode === '7' || rawCode.includes('permission-denied') || rawMessage.includes('invalid-credential') || rawMessage.includes('credentials are not configured') || rawMessage.includes('permission_denied') || rawMessage.includes('missing or insufficient permissions')) {
     return { code: 'server-misconfigured', status: 503, retryable: false };
   }
   return { code: (error && (error.code || error.message)) || 'account-operation-failed', status: Number(error && error.status) || 500, retryable: false };

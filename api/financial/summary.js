@@ -77,9 +77,13 @@ module.exports = async function handler(req, res) {
       net: income.total - expense.total,
     });
   } catch (error) {
-    const isMisconfigured = (error && (error.code === 'server-misconfigured' || error.code === 'app/invalid-credential')) || String(error && error.message || '').includes('credentials are not configured');
+    const rawCode = String(error && error.code != null ? error.code : '');
+    const rawMessage = String(error && error.message || '');
+    const isMisconfigured = (error && (rawCode === 'server-misconfigured' || rawCode === 'app/invalid-credential' || rawCode === '7' || rawCode.includes('permission-denied'))) || rawMessage.includes('credentials are not configured') || rawMessage.includes('PERMISSION_DENIED') || rawMessage.includes('Missing or insufficient permissions');
     const status = Number(error && error.status) || (isMisconfigured ? 503 : 500);
-    console.error('financial-summary-error', String(error && error.code || error && error.message || 'unknown').slice(0, 180));
+    if (!isMisconfigured) {
+      console.error('financial-summary-error', String(error && error.code || error && error.message || 'unknown').slice(0, 180));
+    }
     return json(res, status, { error: isMisconfigured ? 'server-misconfigured' : (status >= 500 ? 'financial-summary-failed' : String(error.message || 'request-failed')) });
   }
 };

@@ -205,15 +205,40 @@
   async function getFinancialSummary(month = "all") {
     init();
     if (!auth || !auth.currentUser) throw new Error("Firebase user is not authenticated");
-    const token = await auth.currentUser.getIdToken();
     const value = month === "all" ? "all" : String(month || "all");
-    const response = await fetchWithTimeout(apiUrl(`/api/financial/summary?month=${encodeURIComponent(value)}`), {
-      cache: "no-store",
-      headers: { "Cache-Control": "no-store", "Authorization": `Bearer ${token}` },
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(body.error || "financial summary failed"), { code: body.error });
-    return body;
+    try {
+      const token = await auth.currentUser.getIdToken();
+      const response = await fetchWithTimeout(apiUrl(`/api/financial/summary?month=${encodeURIComponent(value)}`), {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-store", "Authorization": `Bearer ${token}` },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && body && body.income && typeof body.income.total === "number" && body.expense && typeof body.expense.total === "number") {
+        return body;
+      }
+    } catch (apiErr) {
+      console.warn("Server financial summary API unavailable, using client Firestore aggregation:", apiErr?.message || apiErr);
+    }
+    await ready();
+    let incQuery = db.collection(collectionName("income"));
+    let expQuery = db.collection(collectionName("expense"));
+    if (value !== "all" && /^\d{4}-\d{2}$/.test(value)) {
+      const [year, m] = value.split("-").map(Number);
+      const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
+      incQuery = incQuery.where("date", ">=", `${value}-01`).where("date", "<=", `${value}-${String(lastDay).padStart(2, "0")}`);
+      expQuery = expQuery.where("date", ">=", `${value}-01`).where("date", "<=", `${value}-${String(lastDay).padStart(2, "0")}`);
+    }
+    const [incSnap, expSnap] = await Promise.all([incQuery.get(), expQuery.get()]);
+    const incTotal = incSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+    const expTotal = expSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+    return {
+      month: value,
+      income: { total: incTotal, count: incSnap.docs.length },
+      expense: { total: expTotal, count: expSnap.docs.length },
+      totalIncome: incTotal,
+      totalExpense: expTotal,
+      net: incTotal - expTotal,
+    };
   }
 
   async function adminCreateAccount(payload) {

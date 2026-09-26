@@ -1205,6 +1205,11 @@ function monthLabel(ym) {
 function buildMonthOptions(dates) {
   const set = new Set((dates || []).filter(Boolean).map(d => String(d).slice(0, 7)));
   set.add(todayISO().slice(0, 7));
+  const now = new Date();
+  for (let i = 0; i < 24; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    set.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
   return Array.from(set).sort((a, b) => b.localeCompare(a));
 }
 // يبنى قائمة السنوات المتاحة لقائمة منسدلة (الأحدث أولًا)، ويضمن وجود السنة الحالية دائمًا
@@ -1638,7 +1643,7 @@ const PAGE_DATA_KEYS = {
   clinic: ["doctors", "visitsClinic"], dental: ["doctors", "visitsDental"],
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
   radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
-  ledger: ["income", "expense", "settings"], payroll: ["employees", "payroll"],
+  ledger: ["income", "expense", "settings"], payroll: ["employees", "doctors", "payroll", "labExpenses", ...REVENUE_VISIT_DB_KEYS, "income"],
   reports: ["doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense", "payroll"],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
@@ -1651,24 +1656,42 @@ const PAGE_DATA_KEYS = {
 const PAGE_DATA_LOADING = new Map();
 const PAGE_DATA_LOADED_AT = Object.create(null);
 const FIRESTORE_PAGE_STATE = Object.create(null);
+const FIRESTORE_PAGE_ERRORS = Object.create(null);
 const FINANCIAL_SUMMARY_CACHE = Object.create(null);
 const FINANCIAL_SUMMARY_LOADING = new Map();
 function cachedFinancialSummary(month = "all") {
-  if (FINANCIAL_SUMMARY_CACHE[month]) return FINANCIAL_SUMMARY_CACHE[month];
-  const income = month === "all" ? DB.income : DB.income.filter(x => (x.date || "").startsWith(month));
-  const expense = month === "all" ? DB.expense : DB.expense.filter(x => (x.date || "").startsWith(month));
+  const ym = String(month || "all");
+  const cached = FINANCIAL_SUMMARY_CACHE[ym];
+  if (cached && cached.income && typeof cached.income.total === "number" && cached.expense && typeof cached.expense.total === "number") {
+    return cached;
+  }
+  const income = (Array.isArray(DB.income) ? (ym === "all" ? DB.income : DB.income.filter(x => String(x.date || "").startsWith(ym))) : []);
+  const expense = (Array.isArray(DB.expense) ? (ym === "all" ? DB.expense : DB.expense.filter(x => String(x.date || "").startsWith(ym))) : []);
   const totalIncome = income.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
   const totalExpense = expense.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
-  return { month, income: { total: totalIncome, count: income.length }, expense: { total: totalExpense, count: expense.length }, totalIncome, totalExpense, net: totalIncome - totalExpense };
+  return {
+    month: ym,
+    income: { total: totalIncome, count: income.length },
+    expense: { total: totalExpense, count: expense.length },
+    totalIncome,
+    totalExpense,
+    net: totalIncome - totalExpense
+  };
 }
 async function getFinancialSummary(month = "all", options = {}) {
   if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getFinancialSummary) return cachedFinancialSummary(month);
   const key = String(month || "all");
-  if (!options.force && FINANCIAL_SUMMARY_CACHE[key]) return FINANCIAL_SUMMARY_CACHE[key];
+  if (!options.force && FINANCIAL_SUMMARY_CACHE[key] && FINANCIAL_SUMMARY_CACHE[key].income) return FINANCIAL_SUMMARY_CACHE[key];
   if (!FINANCIAL_SUMMARY_LOADING.has(key)) {
     FINANCIAL_SUMMARY_LOADING.set(key, window.MitaliFirebase.getFinancialSummary(key).then(summary => {
-      FINANCIAL_SUMMARY_CACHE[key] = summary;
-      return summary;
+      if (summary && summary.income && summary.expense) {
+        FINANCIAL_SUMMARY_CACHE[key] = summary;
+        return summary;
+      }
+      return cachedFinancialSummary(key);
+    }).catch(err => {
+      console.warn("Could not fetch remote financial summary:", err);
+      return cachedFinancialSummary(key);
     }).finally(() => FINANCIAL_SUMMARY_LOADING.delete(key)));
   }
   return FINANCIAL_SUMMARY_LOADING.get(key);
@@ -1712,7 +1735,7 @@ function pageQueryOptions(key, page) {
   const monthKey =
     state.monthStateKey === "incomeMonth" || state.monthStateKey === "expenseMonth"
       ? state[state.monthStateKey]
-      : null;
+      : (key === "income" ? (state.incomeMonth || todayISO().slice(0, 7)) : (key === "expense" ? (state.expenseMonth || todayISO().slice(0, 7)) : null));
   if (
     (key === "income" || key === "expense") &&
     monthKey &&
@@ -1725,6 +1748,14 @@ function pageQueryOptions(key, page) {
       { field: "date", op: ">=", value: `${monthKey}-01` },
       { field: "date", op: "<=", value: `${monthKey}-${String(lastDay).padStart(2, "0")}` },
     ];
+  } else if (key === "payroll" || key === "labExpenses") {
+    const selectedMonth = key === "payroll" ? (state.payrollMonth || todayISO().slice(0, 7)) : (state.closingMonth || todayISO().slice(0, 7));
+    if (selectedMonth && selectedMonth !== "all" && /^\d{4}-\d{2}$/.test(selectedMonth)) {
+      options.where = [
+        { field: "month", op: ">=", value: selectedMonth },
+        { field: "month", op: "<=", value: selectedMonth },
+      ];
+    }
   }
   return options;
 }
@@ -1739,22 +1770,32 @@ async function loadFirestorePage(key, page = 1, options = {}) {
     pageState.cursors = { 1: null };
     pageState.pages = {};
     pageState.hasMore = {};
+    delete FIRESTORE_PAGE_ERRORS[key];
     page = 1;
     queryOptions = pageQueryOptions(key, page);
   }
   if (!options.force && pageState.pages[page]) {
     DB[key] = pageState.pages[page].slice();
     pageState.currentPage = page;
+    delete FIRESTORE_PAGE_ERRORS[key];
     return true;
   }
-  const result = await window.MitaliFirebase.getPage(key, Object.assign(queryOptions, options));
-  pageState.pages[page] = Array.isArray(result.records) ? result.records.slice() : [];
-  pageState.hasMore[page] = !!result.hasMore;
-  pageState.cursors[page + 1] = result.nextCursor || null;
-  pageState.currentPage = page;
-  DB[key] = pageState.pages[page].slice();
-  PAGE_DATA_LOADED_AT[key] = Date.now();
-  return true;
+  try {
+    const result = await window.MitaliFirebase.getPage(key, Object.assign(queryOptions, options));
+    pageState.pages[page] = Array.isArray(result.records) ? result.records.slice() : [];
+    pageState.hasMore[page] = !!result.hasMore;
+    pageState.cursors[page + 1] = result.nextCursor || null;
+    pageState.currentPage = page;
+    DB[key] = pageState.pages[page].slice();
+    PAGE_DATA_LOADED_AT[key] = Date.now();
+    delete FIRESTORE_PAGE_ERRORS[key];
+    return true;
+  } catch (error) {
+    console.error("Firestore getPage error for", key, error);
+    FIRESTORE_PAGE_ERRORS[key] = "تعذر تحميل بيانات السحابة، تحقق من Firestore Indexes.";
+    if (!Array.isArray(DB[key])) DB[key] = [];
+    return false;
+  }
 }
 function readFallbackForKey(key) {
   if (key === "settings") return DB.settings || { openingBalance: 0 };
@@ -3414,9 +3455,11 @@ function firestorePageInfo(pageKey, list) {
   // not sort this page again by createdAt/entryOrder, otherwise page 2 could
   // overlap page 1 or omit records between cursors.
   const records = Array.isArray(pageState.pages[current]) ? pageState.pages[current].slice() : (Array.isArray(list) ? list : []);
+  const start = records.length ? ((current - 1) * PAGE_SIZE + 1) : 0;
+  const end = (current - 1) * PAGE_SIZE + records.length;
   return {
     server: true, pageItems: records, current, total: records.length,
-    start: records.length ? 1 : 0, end: records.length,
+    start, end,
     hasMore: !!pageState.hasMore[current], totalPages: current + (pageState.hasMore[current] ? 1 : 0),
   };
 }
@@ -4749,8 +4792,8 @@ function renderMoneyPage(kind) {
   // الوارد والمنصرف يعرضان الشهر الحالي افتراضيًا؛ ويمكن للمستخدم اختيار شهر آخر أو "كل الشهور".
   // هذا تغيير عرض فقط ولا يقص DB.income أو DB.expense ولا يغير الحفظ أو المزامنة.
   if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
-  const monthOptions = buildMonthOptions(list.map(x => x.date));
   const selectedMonth = state[monthStateKey];
+  const monthOptions = buildMonthOptions([selectedMonth, ...list.map(x => x.date)]);
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
   const summary = cachedFinancialSummary(selectedMonth);
   const totalAmt = isIncome ? Number(summary.totalIncome || summary.income.total || 0) : Number(summary.totalExpense || summary.expense.total || 0);
@@ -4759,6 +4802,11 @@ function renderMoneyPage(kind) {
   const moneyPg = firestorePageInfo(`money_${kind}`, sortedMoney) || paginateList(sortedMoney, `money_${kind}`);
 
   c.innerHTML = `
+    ${FIRESTORE_PAGE_ERRORS[kind] ? `
+      <div class="sync-inline-note" style="margin-bottom:14px; background:#FEF3C7; color:#92400E; border:1px solid #F59E0B; padding:10px 14px; border-radius:8px; font-weight:700;">
+        ⚠️ ${esc(FIRESTORE_PAGE_ERRORS[kind])}
+      </div>` : ""}
+
     <div class="card no-print" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
       <div class="section-title" style="margin:0;">📅 عرض شهر: ${selectedMonth === "all" ? "كل الشهور" : monthLabel(selectedMonth)}</div>
       <select id="monthFilterSelect" style="padding:6px 10px; border-radius:8px; border:1px solid var(--border,#ccc); font-size:13px;">
@@ -4768,9 +4816,9 @@ function renderMoneyPage(kind) {
     </div>
 
     <div class="grid grid-3" style="margin-bottom:16px;">
-      <div class="card kpi"><div class="label">إجمالي ${isIncome ? "الوارد" : "المنصرف"} (${selectedMonth === "all" ? "كل الشهور" : monthLabel(selectedMonth)})</div><div class="value ${isIncome ? "income" : "expense"}">${fmt(totalAmt)} ج.م</div></div>
-      <div class="card kpi"><div class="label">عدد العمليات</div><div class="value">${fmtInt(totalCount)}</div></div>
-      <div class="card kpi"><div class="label">متوسط قيمة العملية</div><div class="value">${fmt(totalCount ? totalAmt / totalCount : 0)} ج.م</div></div>
+      <div class="card kpi"><div class="label">إجمالي ${isIncome ? "الوارد" : "المنصرف"} (${selectedMonth === "all" ? "كل الشهور" : monthLabel(selectedMonth)})</div><div class="value ${isIncome ? "income" : "expense"}" id="moneyKpiTotalAmt">${fmt(totalAmt)} ج.م</div></div>
+      <div class="card kpi"><div class="label">عدد العمليات</div><div class="value" id="moneyKpiTotalCount">${fmtInt(totalCount)}</div></div>
+      <div class="card kpi"><div class="label">متوسط قيمة العملية</div><div class="value" id="moneyKpiAvg">${fmt(totalCount ? totalAmt / totalCount : 0)} ج.م</div></div>
     </div>
 
     ${(editing ? canEdit : canAdd) ? `
@@ -4818,7 +4866,7 @@ function renderMoneyPage(kind) {
     </div>` : ""}
 
     <div class="card">
-      <div class="section-title">سجل ${isIncome ? "الوارد" : "المنصرف"} — <span class="hint">${fmtInt(totalCount)} عملية</span></div>
+      <div class="section-title">سجل ${isIncome ? "الوارد" : "المنصرف"} — <span class="hint" id="moneySectionTitleCount">${fmtInt(totalCount)} عملية</span></div>
       <div class="table-wrap"><table>
         <thead><tr>
           <th>التاريخ</th><th>${partyLabel}</th><th>التصنيف</th><th>البيان</th>
@@ -4847,6 +4895,22 @@ function renderMoneyPage(kind) {
   `;
 
   bindPaginationEvents(c);
+  if (STORAGE_MODE === "firestore" && currentUser && window.MitaliFirebase?.getFinancialSummary) {
+    getFinancialSummary(selectedMonth).then(s => {
+      if (s && s.income && s.expense) {
+        const kpiAmt = document.getElementById("moneyKpiTotalAmt");
+        const kpiCount = document.getElementById("moneyKpiTotalCount");
+        const kpiAvg = document.getElementById("moneyKpiAvg");
+        const sectionTitleCount = document.getElementById("moneySectionTitleCount");
+        const newTotal = isIncome ? Number(s.totalIncome || s.income.total || 0) : Number(s.totalExpense || s.expense.total || 0);
+        const newCount = isIncome ? Number(s.income.count || 0) : Number(s.expense.count || 0);
+        if (kpiAmt) kpiAmt.textContent = `${fmt(newTotal)} ج.م`;
+        if (kpiCount) kpiCount.textContent = fmtInt(newCount);
+        if (kpiAvg) kpiAvg.textContent = `${fmt(newCount ? newTotal / newCount : 0)} ج.م`;
+        if (sectionTitleCount) sectionTitleCount.textContent = `${fmtInt(newCount)} عملية`;
+      }
+    }).catch(e => console.warn("Failed to load financial summary:", e));
+  }
   const monthFilterSelect = document.getElementById("monthFilterSelect");
   if (monthFilterSelect) monthFilterSelect.addEventListener("change", () => {
     state[monthStateKey] = monthFilterSelect.value;
@@ -5223,9 +5287,9 @@ function renderPayroll() {
   const canWrite = editing ? canEdit : canAdd;
 
   if (!state.payrollMonth) state.payrollMonth = todayISO().slice(0, 7);
-  const monthOptions = buildMonthOptions(list.map(x => x.month));
   const selectedMonth = state.payrollMonth;
-  const filteredList = selectedMonth === "all" ? list : list.filter(x => x.month === selectedMonth);
+  const monthOptions = buildMonthOptions([selectedMonth, ...list.map(x => x.month)]);
+  const filteredList = (STORAGE_MODE === "firestore" && selectedMonth !== "all") ? list : (selectedMonth === "all" ? list : list.filter(x => x.month === selectedMonth));
   // إصلاح محاسبي: كان "المصروف الفعلى" يحسب فقط سجلات "تم" بكامل مبلغها،
   // و"المستحقات" تحسب كل ما هو غير "تم" بكامل مبلغه أيضًا - فسجل "جزئي" كان يُفقَد
   // من الحسابين معًا (لا يُحتسب مدفوعًا ولا يُحتسب مستحقًا بالقدر الصحيح). الآن كل
@@ -5236,6 +5300,11 @@ function renderPayroll() {
   const payrollPg = firestorePageInfo("payroll", sortedPayroll) || paginateList(sortedPayroll, "payroll");
 
   c.innerHTML = `
+    ${FIRESTORE_PAGE_ERRORS.payroll ? `
+      <div class="sync-inline-note" style="margin-bottom:14px; background:#FEF3C7; color:#92400E; border:1px solid #F59E0B; padding:10px 14px; border-radius:8px; font-weight:700;">
+        ⚠️ ${esc(FIRESTORE_PAGE_ERRORS.payroll)}
+      </div>` : ""}
+
     <div class="grid grid-3" style="margin-bottom:16px;">
       <div class="card kpi"><div class="label">إجمالي المصروف (تم الدفع)</div><div class="value income">${fmt(totalPaid)} ج.م</div></div>
       <div class="card kpi"><div class="label">مستحقات غير مسددة</div><div class="value" style="color:#8A6300;">${fmt(totalDue)} ج.م</div></div>
@@ -5301,7 +5370,18 @@ function renderPayroll() {
   bindPaginationEvents(c);
   if (can("doctors","view")) bindDoctorSettlementEvents(c);
   const payrollMonthSelect = document.getElementById("payrollMonthSelect");
-  if (payrollMonthSelect) payrollMonthSelect.addEventListener("change", () => { state.payrollMonth = payrollMonthSelect.value; state.tablePage.payroll = 1; route(); });
+  if (payrollMonthSelect) payrollMonthSelect.addEventListener("change", () => {
+    state.payrollMonth = payrollMonthSelect.value;
+    state.tablePage.payroll = 1;
+    const pageState = getFirestorePageState("payroll");
+    pageState.currentPage = 1;
+    pageState.cursors = { 1: null };
+    pageState.pages = {};
+    pageState.hasMore = {};
+    pageState.querySignature = undefined;
+    delete FIRESTORE_PAGE_ERRORS.payroll;
+    route();
+  });
 
   const payForm = document.getElementById("payForm");
   if (payForm) payForm.addEventListener("submit", async e => {
@@ -5374,8 +5454,8 @@ console.log("Payroll page ready.");
 // زيارة على حدة (الذى يبقى كما هو لأغراض المتابعة اليومية دون تعديل).
 function doctorSettlementSectionHTML() {
   const canEditLab = can("doctors", "edit");
-  if (!state.settlementMonth) state.settlementMonth = todayISO().slice(0, 7);
-  const ym = state.settlementMonth;
+  const ym = state.payrollMonth || state.settlementMonth || todayISO().slice(0, 7);
+  state.settlementMonth = ym;
   const allMonthVisits = allRevenueVisits().filter(v => (v.date || "").startsWith(ym));
   const lumpIncome = DB.income.filter(r => r.doctorId && (r.date || "").startsWith(ym));
 
