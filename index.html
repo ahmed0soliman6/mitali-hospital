@@ -1798,6 +1798,9 @@ async function preloadFinancialSummaries(page) {
     }
   }
   if (page === "expense") months.add(state.expenseMonth || todayISO().slice(0, 7));
+  if (page === "ledger") {
+    if (state.ledgerMonth && state.ledgerMonth !== "all") months.add(state.ledgerMonth);
+  }
   if (page === "reports") months.add(state.closingMonth || todayISO().slice(0, 7));
   if (page === "reports") {
     const count = state.reportMonthsRange === "all" ? 24 : (Number(state.reportMonthsRange) || 6);
@@ -1811,7 +1814,7 @@ async function preloadFinancialSummaries(page) {
 }
 const SERVER_PAGED_KEYS = new Set([
   "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology",
-  "income", "expense", "payroll", "labExpenses", "auditLog",
+  "payroll", "labExpenses", "auditLog",
 ]);
 const PAGE_PRIMARY_KEY = Object.freeze({
   clinic: "visitsClinic", dental: "visitsDental", operations: "visitsOperations",
@@ -4886,40 +4889,14 @@ function renderMoneyPage(kind) {
   if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
   const selectedMonth = state[monthStateKey];
 
-  const monthCacheKey = `${kind}:${selectedMonth}`;
-  const isFullMonthView = isIncome && selectedMonth !== "all";
-  let fullMonthRecords = isFullMonthView ? FINANCIAL_MONTH_RECORDS_CACHE[monthCacheKey] : null;
-  let isLoadingFullMonth = false;
-
-  if (isFullMonthView) {
-    if (fullMonthRecords === undefined && STORAGE_MODE === "firestore" && currentUser) {
-      isLoadingFullMonth = true;
-      loadFullFinancialMonth("income", selectedMonth).then(() => {
-        if (state.page === "income" && state.incomeMonth === selectedMonth) {
-          route();
-        }
-      });
-    }
-  }
-
-  const activeRecords = isFullMonthView
-    ? (Array.isArray(fullMonthRecords) ? fullMonthRecords : (Array.isArray(DB.income) ? DB.income.filter(x => String(x.date || "").startsWith(selectedMonth)) : []))
-    : list;
-
-  const editing = state.editId ? (activeRecords.find(v => v.id === state.editId) || list.find(v => v.id === state.editId)) : null;
-
-  const monthOptions = buildMonthOptions([
-    selectedMonth,
-    ...list.map(x => x.date),
-    ...(Array.isArray(fullMonthRecords) ? fullMonthRecords.map(x => x.date) : []),
-  ]);
-
+  const monthOptions = buildMonthOptions(list.map(x => x.date));
   const summary = cachedFinancialSummary(selectedMonth);
   const totalAmt = isIncome ? Number(summary.totalIncome || summary.income.total || 0) : Number(summary.totalExpense || summary.expense.total || 0);
   const totalCount = isIncome ? Number(summary.income.count || 0) : Number(summary.expense.count || 0);
 
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
-  const sortedMoney = sortByEntryOrderDesc(isFullMonthView ? activeRecords : filteredList);
+  const editing = state.editId ? list.find(v => v.id === state.editId) : null;
+  const sortedMoney = sortByEntryOrderDesc(filteredList);
   const moneyPg = firestorePageInfo(`money_${kind}`, sortedMoney) || paginateList(sortedMoney, `money_${kind}`);
 
   c.innerHTML = `
@@ -4939,7 +4916,7 @@ function renderMoneyPage(kind) {
     <div class="grid grid-3" style="margin-bottom:16px;">
       <div class="card kpi"><div class="label">إجمالي ${isIncome ? "الوارد" : "المنصرف"} (${selectedMonth === "all" ? "كل الشهور" : monthLabel(selectedMonth)})</div><div class="value ${isIncome ? "income" : "expense"}" id="moneyKpiTotalAmt">${fmt(totalAmt)} ج.م</div></div>
       <div class="card kpi"><div class="label">عدد العمليات</div><div class="value" id="moneyKpiTotalCount">${fmtInt(totalCount)}</div></div>
-      <div class="card kpi"><div class="label">متوسط قيمة العملية</div><div class="value" id="moneyKpiAvg">${fmt(totalCount ? totalAmt / totalCount : 0)} ج.م</div></div>
+      <div class="card kpi"><div class="label">متوسط قيمة العملية</div><div class="value" id="moneyKpiAvg">${fmt(totalCount ? totalAmt / totalCount : 0)} ج.m</div></div>
     </div>
 
     ${(editing ? canEdit : canAdd) ? `
@@ -4994,11 +4971,9 @@ function renderMoneyPage(kind) {
           <th>طريقة الدفع</th><th>المبلغ</th><th>${personLabel}</th><th></th>
         </tr></thead>
         <tbody>
-          ${isLoadingFullMonth ? `
-            <tr class="empty-row"><td colspan="8" style="padding:32px; text-align:center; font-weight:700; color:var(--muted);">⏳ جارٍ تحميل جميع سجلات الشهر...</td></tr>
-          ` : (sortedMoney.length === 0 ? `
+          ${sortedMoney.length === 0 ? `
             <tr class="empty-row"><td colspan="8">لا توجد عمليات مسجّلة فى ${selectedMonth === "all" ? "أي شهر" : "هذا الشهر"} بعد</td></tr>
-          ` : (isFullMonthView ? sortedMoney : moneyPg.pageItems).map(x => `
+          ` : moneyPg.pageItems.map(x => `
             <tr>
               <td>${x.date || "-"}${entryTimeDisplay(x.createdAt) ? `<div class="hint" style="font-size:11px;">${entryTimeDisplay(x.createdAt)}</div>` : ""}</td>
               <td>${esc(x.party)}</td>
@@ -5011,14 +4986,14 @@ function renderMoneyPage(kind) {
                 ${canEdit ? `<button class="btn sm ghost" data-edit="${x.id}">تعديل</button>` : ""}
                 ${canDelete ? `<button class="btn sm danger" data-del="${x.id}">حذف</button>` : ""}
               </td>
-            </tr>`).join(""))}
+            </tr>`).join("")}
         </tbody>
       </table></div>
-      ${isFullMonthView ? "" : paginationControlsHTML(`money_${kind}`, moneyPg)}
+      ${paginationControlsHTML(`money_${kind}`, moneyPg)}
     </div>
   `;
 
-  if (!isFullMonthView) bindPaginationEvents(c);
+  bindPaginationEvents(c);
   if (STORAGE_MODE === "firestore" && currentUser && window.MitaliFirebase?.getFinancialSummary) {
     getFinancialSummary(selectedMonth).then(s => {
       if (s && s.income && s.expense) {
@@ -5321,15 +5296,15 @@ function renderLedger() {
 
     <div class="grid grid-4 ${hideWhilePrinting}" style="margin-bottom:18px;">
       <div class="card kpi"><div class="label">الرصيد الافتتاحي</div><div class="value">${fmt(DB.settings.openingBalance)} ج.م</div></div>
-      <div class="card kpi"><div class="label">إجمالي الوارد (كل الفترات)</div><div class="value income">${fmt(totalIn)} ج.م</div></div>
-      <div class="card kpi"><div class="label">إجمالي المنصرف (كل الفترات)</div><div class="value expense">${fmt(totalOut)} ج.م</div></div>
-      <div class="card kpi hero"><div class="label">الرصيد الحالي الفعلي</div><div class="value">${fmt(currentBalance())} ج.م</div></div>
+      <div class="card kpi"><div class="label">إجمالي الوارد (كل الفترات)</div><div class="value income" id="ledgerKpiAllIn">${fmt(totalIn)} ج.م</div></div>
+      <div class="card kpi"><div class="label">إجمالي المنصرف (كل الفترات)</div><div class="value expense" id="ledgerKpiAllOut">${fmt(totalOut)} ج.م</div></div>
+      <div class="card kpi hero"><div class="label">الرصيد الحالي الفعلي</div><div class="value" id="ledgerKpiCurrentBal">${fmt(currentBalance())} ج.م</div></div>
     </div>
 
     <div class="grid grid-3 ${hideWhilePrinting}" style="margin-bottom:16px;">
-      <div class="card kpi"><div class="label">وارد ${monthPeriodLabel}</div><div class="value income">${fmt(monthIn)} ج.م</div></div>
-      <div class="card kpi"><div class="label">منصرف ${monthPeriodLabel}</div><div class="value expense">${fmt(monthOut)} ج.م</div></div>
-      <div class="card kpi hero"><div class="label">الرصيد حتى نهاية ${selectedMonth === "all" ? "الفترة" : monthPeriodLabel}</div><div class="value">${fmt(monthEndBalance)} ج.م</div></div>
+      <div class="card kpi"><div class="label">وارد ${monthPeriodLabel}</div><div class="value income" id="ledgerKpiMonthIn">${fmt(monthIn)} ج.م</div></div>
+      <div class="card kpi"><div class="label">منصرف ${monthPeriodLabel}</div><div class="value expense" id="ledgerKpiMonthOut">${fmt(monthOut)} ج.م</div></div>
+      <div class="card kpi hero"><div class="label">الرصيد حتى نهاية ${selectedMonth === "all" ? "الفترة" : monthPeriodLabel}</div><div class="value" id="ledgerKpiMonthEndBal">${fmt(monthEndBalance)} ج.م</div></div>
     </div>
 
     <div class="card ${hideWhilePrinting}" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -5372,6 +5347,38 @@ function renderLedger() {
   `;
 
   bindPaginationEvents(c);
+  if (STORAGE_MODE === "firestore" && currentUser && window.MitaliFirebase?.getFinancialSummary) {
+    Promise.all([
+      getFinancialSummary("all"),
+      selectedMonth === "all" ? Promise.resolve(null) : getFinancialSummary(selectedMonth)
+    ]).then(([allSum, mSum]) => {
+      const allInBox = document.getElementById("ledgerKpiAllIn");
+      const allOutBox = document.getElementById("ledgerKpiAllOut");
+      const currentBalBox = document.getElementById("ledgerKpiCurrentBal");
+      const monthInBox = document.getElementById("ledgerKpiMonthIn");
+      const monthOutBox = document.getElementById("ledgerKpiMonthOut");
+      const monthEndBalBox = document.getElementById("ledgerKpiMonthEndBal");
+
+      const opening = Number(DB.settings.openingBalance) || 0;
+      if (allSum && typeof allSum.totalIncome === "number") {
+        const fullIn = Number(allSum.totalIncome || allSum.income.total || 0);
+        const fullOut = Number(allSum.totalExpense || allSum.expense.total || 0);
+        const fullBal = opening + fullIn - fullOut;
+        if (allInBox) allInBox.textContent = `${fmt(fullIn)} ج.م`;
+        if (allOutBox) allOutBox.textContent = `${fmt(fullOut)} ج.م`;
+        if (currentBalBox) currentBalBox.textContent = `${fmt(fullBal)} ج.م`;
+        if (selectedMonth === "all" && monthEndBalBox) {
+          monthEndBalBox.textContent = `${fmt(fullBal)} ج.م`;
+        }
+      }
+      if (mSum && typeof mSum.totalIncome === "number") {
+        const mIn = Number(mSum.totalIncome || mSum.income.total || 0);
+        const mOut = Number(mSum.totalExpense || mSum.expense.total || 0);
+        if (monthInBox) monthInBox.textContent = `${fmt(mIn)} ج.م`;
+        if (monthOutBox) monthOutBox.textContent = `${fmt(mOut)} ج.م`;
+      }
+    }).catch(e => console.warn("Failed to load ledger financial summary:", e));
+  }
   const monthSelect = document.getElementById("ledgerMonthSelect");
   if (monthSelect) monthSelect.addEventListener("change", () => { state.ledgerMonth = monthSelect.value; route(); });
   const searchInput = document.getElementById("ledgerSearchInput");
