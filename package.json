@@ -9,6 +9,9 @@
     "node": ">=18"
   },
   "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node tools/check-js-syntax.js",
     "check": "node tools/check-js-syntax.js",
     "test:contracts": "node tools/api-contract-tests.js",
     "test:security": "node tools/security-auth-tests.js",
@@ -51,6 +54,7 @@
   "dependencies": {
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.9",
+    "express": "^5.2.1",
     "firebase-admin": "^13.5.0"
   },
   "devDependencies": {
