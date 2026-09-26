@@ -27,16 +27,38 @@ function getAdmin() {
   const projectId = process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT || 'mitali-hospital';
   const clientEmail = String(process.env.FIREBASE_CLIENT_EMAIL || '').trim();
   const privateKey = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY);
-  if (!clientEmail || !privateKey || !privateKey.includes('-----BEGIN PRIVATE KEY-----') || !privateKey.includes('-----END PRIVATE KEY-----')) {
+
+  let hasValidCert = false;
+  if (clientEmail && clientEmail.includes('@') && !clientEmail.includes('your-firebase-admin') && !clientEmail.includes('example') && privateKey && !privateKey.includes('...')) {
+    try {
+      crypto.createPrivateKey(privateKey);
+      hasValidCert = true;
+    } catch (_) {
+      hasValidCert = false;
+    }
+  }
+
+  if (hasValidCert) {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
+        projectId,
+      });
+      return admin;
+    } catch (_) {
+      // Fall through to project-level initialization
+    }
+  }
+
+  try {
+    admin.initializeApp({ projectId });
+    return admin;
+  } catch (err) {
     const error = new Error('Firebase Admin credentials are not configured correctly');
     error.code = 'server-misconfigured';
+    error.status = 503;
     throw error;
   }
-  admin.initializeApp({
-    credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
-    projectId,
-  });
-  return admin;
 }
 
 function authEmailForUsername(username) {

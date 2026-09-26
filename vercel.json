@@ -1,4 +1,6 @@
 {
+  "outputDirectory": ".",
+  "buildCommand": "node tools/check-js-syntax.js",
   "headers": [
     {
       "source": "/sw.js",

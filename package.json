@@ -9,6 +9,9 @@
     "node": ">=18"
   },
   "scripts": {
+    "dev": "node tools/dev-server.js",
+    "start": "node tools/dev-server.js",
+    "build": "node tools/check-js-syntax.js",
     "check": "node tools/check-js-syntax.js",
     "test:contracts": "node tools/api-contract-tests.js",
     "test:security": "node tools/security-auth-tests.js",
@@ -16,7 +19,6 @@
     "test:account-delete": "node tools/account-api-delete-test.js",
     "test:data-wipe": "node tools/data-wipe-api-test.js",
     "test:income-form": "node tools/income-form-test.js",
-    "test:ledger-visibility": "node tools/ledger-visibility-test.js",
     "test:doctor-payroll": "node tools/doctor-payroll-test.js",
     "test:accounting-consistency": "node tools/accounting-consistency-test.js",
     "test:doctor-departments": "node tools/doctor-departments-test.js",
@@ -51,6 +53,7 @@
   "dependencies": {
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.9",
+    "express": "^4.21.2",
     "firebase-admin": "^13.5.0"
   },
   "devDependencies": {

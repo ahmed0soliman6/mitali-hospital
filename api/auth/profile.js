@@ -8,7 +8,7 @@ const {
 
 function setCors(req, res) {
   const origin = String((req.headers && req.headers.origin) || '');
-  if (origin === 'null' || origin === 'https://mitali1.vercel.app') {
+  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');

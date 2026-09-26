@@ -2,7 +2,7 @@ const { getAdmin } = require('../_lib/firebase-admin');
 
 function setCors(req, res) {
   const origin = String((req.headers && req.headers.origin) || '');
-  if (origin === 'null' || origin === 'https://mitali1.vercel.app') {
+  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -77,9 +77,10 @@ module.exports = async function handler(req, res) {
       net: income.total - expense.total,
     });
   } catch (error) {
-    const status = Number(error && error.status) || 500;
+    const isMisconfigured = (error && (error.code === 'server-misconfigured' || error.code === 'app/invalid-credential')) || String(error && error.message || '').includes('credentials are not configured');
+    const status = Number(error && error.status) || (isMisconfigured ? 503 : 500);
     console.error('financial-summary-error', String(error && error.code || error && error.message || 'unknown').slice(0, 180));
-    return json(res, status, { error: status >= 500 ? 'financial-summary-failed' : String(error.message || 'request-failed') });
+    return json(res, status, { error: isMisconfigured ? 'server-misconfigured' : (status >= 500 ? 'financial-summary-failed' : String(error.message || 'request-failed')) });
   }
 };
 

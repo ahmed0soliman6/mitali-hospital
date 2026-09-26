@@ -14,7 +14,7 @@ const {
 
 function setCors(req, res) {
   const origin = String((req.headers && req.headers.origin) || '');
-  if (origin === 'null' || origin === 'https://mitali1.vercel.app') {
+  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -63,6 +63,9 @@ function normalizedFirebaseError(error) {
   }
   if (rawCode === '14' || rawCode.includes('unavailable') || rawMessage.includes('service unavailable')) {
     return { code: 'firebase-unavailable', status: 503, retryable: true };
+  }
+  if (rawCode === 'app/invalid-credential' || rawCode === 'server-misconfigured' || rawMessage.includes('invalid-credential') || rawMessage.includes('credentials are not configured')) {
+    return { code: 'server-misconfigured', status: 503, retryable: false };
   }
   return { code: (error && (error.code || error.message)) || 'account-operation-failed', status: Number(error && error.status) || 500, retryable: false };
 }
