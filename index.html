@@ -3351,7 +3351,10 @@ function firestorePageInfo(pageKey, list) {
   const pageState = getFirestorePageState(dbKey);
   const current = pageState.currentPage || state.tablePage[pageKey] || 1;
   state.tablePage[pageKey] = current;
-  const records = Array.isArray(list) ? list : [];
+  // The server's primary-field + document-ID order is the Cursor order. Do
+  // not sort this page again by createdAt/entryOrder, otherwise page 2 could
+  // overlap page 1 or omit records between cursors.
+  const records = Array.isArray(pageState.pages[current]) ? pageState.pages[current].slice() : (Array.isArray(list) ? list : []);
   return {
     server: true, pageItems: records, current, total: records.length,
     start: records.length ? 1 : 0, end: records.length,
