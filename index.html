@@ -1857,7 +1857,7 @@ function pageQueryOptions(key, page) {
   return options;
 }
 async function loadFirestorePage(key, page = 1, options = {}) {
-  if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getPage) return false;
+  if (STORAGE_MODE !== "firestore" || !currentUser || !window.MitaliFirebase?.getPage || !SERVER_PAGED_KEYS.has(key)) return false;
   const pageState = getFirestorePageState(key);
   let queryOptions = pageQueryOptions(key, page);
   const querySignature = JSON.stringify(queryOptions.where || []);
@@ -3534,9 +3534,7 @@ function waIconButtonHTML(phone, dataAttr, key) {
 const PAGE_SIZE = 50;
 function pageKeyDatabaseKey(pageKey) {
   if (PAGE_PRIMARY_KEY[pageKey]) return PAGE_PRIMARY_KEY[pageKey];
-  if (pageKey === "ledger") return null;
-  if (pageKey === "money_income") return "income";
-  if (pageKey === "money_expense") return "expense";
+  if (pageKey === "ledger" || pageKey === "money_income" || pageKey === "money_expense") return null;
   if (pageKey === "payroll") return "payroll";
   if (pageKey === "auditLog") return "auditLog";
   const visitMatch = /^visits_(clinic|dental|operations|labs|radiology)$/.exec(pageKey || "");
@@ -4897,7 +4895,7 @@ function renderMoneyPage(kind) {
   const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
   const editing = state.editId ? list.find(v => v.id === state.editId) : null;
   const sortedMoney = sortByEntryOrderDesc(filteredList);
-  const moneyPg = firestorePageInfo(`money_${kind}`, sortedMoney) || paginateList(sortedMoney, `money_${kind}`);
+  const moneyPg = paginateList(sortedMoney, `money_${kind}`);
 
   c.innerHTML = `
     ${FIRESTORE_PAGE_ERRORS[kind] ? `

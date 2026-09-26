@@ -13,7 +13,7 @@ assert.match(moneyBlock, /if \(!state\[monthStateKey\]\) state\[monthStateKey\] 
 assert.match(moneyBlock, /const filteredList = selectedMonth === "all" \? list : list\.filter/);
 assert.match(moneyBlock, /const summary = cachedFinancialSummary\(selectedMonth\)/);
 assert.match(moneyBlock, /const totalAmt = isIncome \? Number\(summary\.totalIncome/);
-assert.match(moneyBlock, /const moneyPg = firestorePageInfo\(`money_\$\{kind\}`, sortedMoney\) \|\| paginateList/);
+assert.match(moneyBlock, /const moneyPg = paginateList\(sortedMoney, `money_\$\{kind\}`\);/);
 assert.doesNotMatch(moneyBlock, /slice\(0\s*,\s*35\)/);
 assert.doesNotMatch(moneyBlock, /slice\(0\s*,\s*50\)/);
 
