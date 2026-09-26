@@ -1700,10 +1700,103 @@ async function getFinancialSummary(month = "all", options = {}) {
 function invalidateFinancialSummaries() {
   Object.keys(FINANCIAL_SUMMARY_CACHE).forEach(key => delete FINANCIAL_SUMMARY_CACHE[key]);
 }
+
+const FINANCIAL_MONTH_RECORDS_CACHE = Object.create(null);
+const FINANCIAL_MONTH_RECORDS_LOADING = new Map();
+
+async function loadFullFinancialMonth(kind, month, options = {}) {
+  const ym = String(month || "");
+  if (!ym || ym === "all") return null;
+  const cacheKey = `${kind}:${ym}`;
+  if (!options.force && Array.isArray(FINANCIAL_MONTH_RECORDS_CACHE[cacheKey])) {
+    return FINANCIAL_MONTH_RECORDS_CACHE[cacheKey];
+  }
+  if (STORAGE_MODE !== "firestore" || !currentUser) {
+    const list = kind === "income" ? DB.income : DB.expense;
+    const records = Array.isArray(list) ? list.filter(x => String(x.date || "").startsWith(ym)) : [];
+    FINANCIAL_MONTH_RECORDS_CACHE[cacheKey] = records;
+    return records;
+  }
+  if (!FINANCIAL_MONTH_RECORDS_LOADING.has(cacheKey)) {
+    const promise = (async () => {
+      let records = [];
+      if (window.MitaliFirebase?.getMonthRecords) {
+        records = await window.MitaliFirebase.getMonthRecords(kind, ym);
+      } else {
+        const [year, m] = ym.split("-").map(Number);
+        const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
+        const startDate = `${ym}-01`;
+        const endDate = `${ym}-${String(lastDay).padStart(2, "0")}`;
+        const coll = window.firebase.firestore().collection(kind === "income" ? "income" : "expense");
+        try {
+          const snap = await coll.where("date", ">=", startDate).where("date", "<=", endDate).get();
+          records = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+        } catch (_) {
+          const snap = await coll.get();
+          records = snap.docs
+            .filter(d => {
+              const dDate = String(d.data().date || "");
+              return dDate >= startDate && dDate <= endDate;
+            })
+            .map(d => Object.assign({ id: d.id }, d.data()));
+        }
+      }
+      if (Array.isArray(records)) {
+        FINANCIAL_MONTH_RECORDS_CACHE[cacheKey] = records;
+        const total = records.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+        if (!FINANCIAL_SUMMARY_CACHE[ym]) {
+          FINANCIAL_SUMMARY_CACHE[ym] = {
+            month: ym,
+            income: kind === "income" ? { total, count: records.length } : { total: 0, count: 0 },
+            expense: kind === "expense" ? { total, count: records.length } : { total: 0, count: 0 },
+            totalIncome: kind === "income" ? total : 0,
+            totalExpense: kind === "expense" ? total : 0,
+            net: kind === "income" ? total : -total,
+          };
+        } else {
+          if (kind === "income") {
+            FINANCIAL_SUMMARY_CACHE[ym].income = { total, count: records.length };
+            FINANCIAL_SUMMARY_CACHE[ym].totalIncome = total;
+            FINANCIAL_SUMMARY_CACHE[ym].net = total - (Number(FINANCIAL_SUMMARY_CACHE[ym].totalExpense) || 0);
+          } else {
+            FINANCIAL_SUMMARY_CACHE[ym].expense = { total, count: records.length };
+            FINANCIAL_SUMMARY_CACHE[ym].totalExpense = total;
+            FINANCIAL_SUMMARY_CACHE[ym].net = (Number(FINANCIAL_SUMMARY_CACHE[ym].totalIncome) || 0) - total;
+          }
+        }
+      }
+      return FINANCIAL_MONTH_RECORDS_CACHE[cacheKey] || [];
+    })().catch(err => {
+      console.warn(`Could not load full month records for ${cacheKey}:`, err);
+      return FINANCIAL_MONTH_RECORDS_CACHE[cacheKey] || [];
+    }).finally(() => FINANCIAL_MONTH_RECORDS_LOADING.delete(cacheKey));
+    FINANCIAL_MONTH_RECORDS_LOADING.set(cacheKey, promise);
+  }
+  return FINANCIAL_MONTH_RECORDS_LOADING.get(cacheKey);
+}
+
+function invalidateFinancialMonthRecords(kind, month) {
+  if (kind && month) {
+    delete FINANCIAL_MONTH_RECORDS_CACHE[`${kind}:${month}`];
+  } else if (kind) {
+    Object.keys(FINANCIAL_MONTH_RECORDS_CACHE).forEach(k => {
+      if (k.startsWith(`${kind}:`)) delete FINANCIAL_MONTH_RECORDS_CACHE[k];
+    });
+  } else {
+    Object.keys(FINANCIAL_MONTH_RECORDS_CACHE).forEach(k => delete FINANCIAL_MONTH_RECORDS_CACHE[k]);
+  }
+}
+
 async function preloadFinancialSummaries(page) {
   if (STORAGE_MODE !== "firestore" || !currentUser) return;
   const months = new Set(["all"]);
-  if (page === "income") months.add(state.incomeMonth || todayISO().slice(0, 7));
+  if (page === "income") {
+    const selectedMonth = state.incomeMonth || todayISO().slice(0, 7);
+    months.add(selectedMonth);
+    if (selectedMonth !== "all") {
+      loadFullFinancialMonth("income", selectedMonth);
+    }
+  }
   if (page === "expense") months.add(state.expenseMonth || todayISO().slice(0, 7));
   if (page === "reports") months.add(state.closingMonth || todayISO().slice(0, 7));
   if (page === "reports") {
@@ -4785,21 +4878,48 @@ function renderMoneyPage(kind) {
   const partyLabel = isIncome ? "اسم المريض أو الجهة" : "الجهة المصروف إليها";
   const personLabel = isIncome ? "اسم المستلم" : "اسم المسؤول";
   const c = document.getElementById("content");
-  const editing = state.editId ? list.find(v => v.id === state.editId) : null;
   const canAdd = can(kind, "add"), canEdit = can(kind, "edit"), canDelete = can(kind, "delete");
 
   const monthStateKey = isIncome ? "incomeMonth" : "expenseMonth";
   state.monthStateKey = monthStateKey;
   // الوارد والمنصرف يعرضان الشهر الحالي افتراضيًا؛ ويمكن للمستخدم اختيار شهر آخر أو "كل الشهور".
-  // هذا تغيير عرض فقط ولا يقص DB.income أو DB.expense ولا يغير الحفظ أو المزامنة.
   if (!state[monthStateKey]) state[monthStateKey] = todayISO().slice(0, 7);
   const selectedMonth = state[monthStateKey];
-  const monthOptions = buildMonthOptions([selectedMonth, ...list.map(x => x.date)]);
-  const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
+
+  const monthCacheKey = `${kind}:${selectedMonth}`;
+  const isFullMonthView = isIncome && selectedMonth !== "all";
+  let fullMonthRecords = isFullMonthView ? FINANCIAL_MONTH_RECORDS_CACHE[monthCacheKey] : null;
+  let isLoadingFullMonth = false;
+
+  if (isFullMonthView) {
+    if (fullMonthRecords === undefined && STORAGE_MODE === "firestore" && currentUser) {
+      isLoadingFullMonth = true;
+      loadFullFinancialMonth("income", selectedMonth).then(() => {
+        if (state.page === "income" && state.incomeMonth === selectedMonth) {
+          route();
+        }
+      });
+    }
+  }
+
+  const activeRecords = isFullMonthView
+    ? (Array.isArray(fullMonthRecords) ? fullMonthRecords : (Array.isArray(DB.income) ? DB.income.filter(x => String(x.date || "").startsWith(selectedMonth)) : []))
+    : list;
+
+  const editing = state.editId ? (activeRecords.find(v => v.id === state.editId) || list.find(v => v.id === state.editId)) : null;
+
+  const monthOptions = buildMonthOptions([
+    selectedMonth,
+    ...list.map(x => x.date),
+    ...(Array.isArray(fullMonthRecords) ? fullMonthRecords.map(x => x.date) : []),
+  ]);
+
   const summary = cachedFinancialSummary(selectedMonth);
   const totalAmt = isIncome ? Number(summary.totalIncome || summary.income.total || 0) : Number(summary.totalExpense || summary.expense.total || 0);
   const totalCount = isIncome ? Number(summary.income.count || 0) : Number(summary.expense.count || 0);
-  const sortedMoney = sortByEntryOrderDesc(filteredList);
+
+  const filteredList = selectedMonth === "all" ? list : list.filter(x => (x.date || "").startsWith(selectedMonth));
+  const sortedMoney = sortByEntryOrderDesc(isFullMonthView ? activeRecords : filteredList);
   const moneyPg = firestorePageInfo(`money_${kind}`, sortedMoney) || paginateList(sortedMoney, `money_${kind}`);
 
   c.innerHTML = `
@@ -4874,8 +4994,11 @@ function renderMoneyPage(kind) {
           <th>طريقة الدفع</th><th>المبلغ</th><th>${personLabel}</th><th></th>
         </tr></thead>
         <tbody>
-          ${filteredList.length === 0 ? `<tr class="empty-row"><td colspan="8">لا توجد عمليات مسجّلة فى ${selectedMonth === "all" ? "أي شهر" : "هذا الشهر"} بعد</td></tr>` : ""}
-          ${moneyPg.pageItems.map(x => `
+          ${isLoadingFullMonth ? `
+            <tr class="empty-row"><td colspan="8" style="padding:32px; text-align:center; font-weight:700; color:var(--muted);">⏳ جارٍ تحميل جميع سجلات الشهر...</td></tr>
+          ` : (sortedMoney.length === 0 ? `
+            <tr class="empty-row"><td colspan="8">لا توجد عمليات مسجّلة فى ${selectedMonth === "all" ? "أي شهر" : "هذا الشهر"} بعد</td></tr>
+          ` : (isFullMonthView ? sortedMoney : moneyPg.pageItems).map(x => `
             <tr>
               <td>${x.date || "-"}${entryTimeDisplay(x.createdAt) ? `<div class="hint" style="font-size:11px;">${entryTimeDisplay(x.createdAt)}</div>` : ""}</td>
               <td>${esc(x.party)}</td>
@@ -4888,14 +5011,14 @@ function renderMoneyPage(kind) {
                 ${canEdit ? `<button class="btn sm ghost" data-edit="${x.id}">تعديل</button>` : ""}
                 ${canDelete ? `<button class="btn sm danger" data-del="${x.id}">حذف</button>` : ""}
               </td>
-            </tr>`).join("")}
+            </tr>`).join(""))}
         </tbody>
       </table></div>
-      ${paginationControlsHTML(`money_${kind}`, moneyPg)}
+      ${isFullMonthView ? "" : paginationControlsHTML(`money_${kind}`, moneyPg)}
     </div>
   `;
 
-  bindPaginationEvents(c);
+  if (!isFullMonthView) bindPaginationEvents(c);
   if (STORAGE_MODE === "firestore" && currentUser && window.MitaliFirebase?.getFinancialSummary) {
     getFinancialSummary(selectedMonth).then(s => {
       if (s && s.income && s.expense) {
@@ -4922,6 +5045,11 @@ function renderMoneyPage(kind) {
     pageState.pages = {};
     pageState.hasMore = {};
     pageState.querySignature = undefined;
+    if (isIncome && monthFilterSelect.value !== "all") {
+      loadFullFinancialMonth("income", monthFilterSelect.value).then(() => {
+        if (state.page === "income" && state.incomeMonth === monthFilterSelect.value) route();
+      });
+    }
     route();
   });
 
@@ -7793,6 +7921,13 @@ async function refreshTableFromFirestore(key, changes) {
     await cacheLocally(key, safeFresh);
     if (Array.isArray(safeFresh)) await writeSyncBaseline(key, safeFresh);
     DATA_VERSION++;
+    if (key === "income" || key === "expense") {
+      invalidateFinancialSummaries();
+      invalidateFinancialMonthRecords(key);
+      if (key === "income" && state.page === "income" && state.incomeMonth && state.incomeMonth !== "all") {
+        loadFullFinancialMonth("income", state.incomeMonth, { force: true });
+      }
+    }
     if (key === "staffAccounts" && currentUser) {
       const me = getCurrentAccount();
       if (!me || me.status === "موقوف" || Number(me.credentialVersion || me.securityVersion || 1) !== Number(currentUser.credentialVersion || currentUser.securityVersion || 1)) {

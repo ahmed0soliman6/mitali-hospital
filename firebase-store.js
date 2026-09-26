@@ -237,6 +237,33 @@
     };
   }
 
+  async function getMonthRecords(key, month) {
+    init();
+    if (!auth || !auth.currentUser) throw new Error("Firebase user is not authenticated");
+    await ready();
+    const value = String(month || "");
+    if (!value || value === "all" || !/^\d{4}-\d{2}$/.test(value)) {
+      throw new Error("Valid month (YYYY-MM) is required for getMonthRecords");
+    }
+    const [year, m] = value.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
+    const startDate = `${value}-01`;
+    const endDate = `${value}-${String(lastDay).padStart(2, "0")}`;
+    const coll = db.collection(collectionName(key));
+    let querySnap;
+    try {
+      querySnap = await coll.where("date", ">=", startDate).where("date", "<=", endDate).get();
+    } catch (queryErr) {
+      const allSnap = await coll.get();
+      const filtered = allSnap.docs.filter(d => {
+        const dDate = String(d.data().date || "");
+        return dDate >= startDate && dDate <= endDate;
+      });
+      return filtered.map(d => Object.assign({ id: d.id }, d.data()));
+    }
+    return querySnap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+  }
+
   async function adminCreateAccount(payload) {
     return adminAccountRequest(Object.assign({ action: 'create' }, payload || {}));
   }
@@ -571,6 +598,7 @@
     changePassword,
     adminAccountRequest,
     getFinancialSummary,
+    getMonthRecords,
     adminCreateAccount,
     configureManagerRecovery,
     recoverManagerPassword,
