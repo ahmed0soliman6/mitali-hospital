@@ -12,6 +12,16 @@ assert.match(source, /const deleted = \[\.\.\.new Set\(explicitDeleted\)\]/);
 assert.doesNotMatch(source, /const deleted = \[\.\.\.new Set\(\[\s*\.\.\.\(previous \|\| \[\]\)/);
 assert.match(source, /function mergeRemoteSnapshot\(key, remoteValue, blockedIds = new Set\(\)\)/);
 assert.match(source, /Snapshot ناقصة لا تعني حذفًا/);
+assert.match(source, /if \(recentMutation \|\| SYNC_QUEUE_KEYS\.has\(String\(key\)\)\)/);
+assert.match(source, /async function syncVisitIncomeLink\(rec, kind, skipPersist\)/);
+assert.match(source, /await markSyncTombstone\("income", linked\.id\)/);
+assert.match(source, /async function syncPayrollExpenseLink\(rec\)/);
+assert.match(source, /async function syncLabExpenseTreasuryLink\(rec, doctorName\)/);
+assert.match(source, /await markSyncTombstone\("expense", linked\.id\)/);
+assert.match(source, /await markSyncTombstone\("payroll", rec\.id\)/);
+assert.match(source, /await markSyncTombstone\("doctors", removed\.id\)/);
+assert.match(source, /await markSyncTombstone\("employees", removed\.id\)/);
+assert.match(source, /if \(removed\) await markSyncTombstone\(isIncome \? "income" : "expense", removed\.id\)/);
 
 // Behavioral model for every operational collection: a partial local snapshot
 // may update one record, but must never delete an omitted remote record.

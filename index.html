@@ -1568,18 +1568,20 @@ async function loadAll(options = {}) {
   // ولا في الرئيسية. نضيف القيد مرة واحدة لكل سجل مدفوع بلا رابط، ولا نلمس السجل
   // إذا كان مرتبطًا بالفعل.
   let incomeBackfillNeeded = false;
-  const backfillIncomeLinks = (rows, kind) => (rows || []).forEach(v => {
-    if (!v.linkedIncomeId && (Number(v.paid) || 0) > 0) {
-      syncVisitIncomeLink(v, kind, true);
-      incomeBackfillNeeded = true;
+  const backfillIncomeLinks = async (rows, kind) => {
+    for (const v of (rows || [])) {
+      if (!v.linkedIncomeId && (Number(v.paid) || 0) > 0) {
+        await syncVisitIncomeLink(v, kind, true);
+        incomeBackfillNeeded = true;
+      }
     }
-  });
-  backfillIncomeLinks(DB.visitsClinic, "clinic");
-  backfillIncomeLinks(DB.visitsDental, "dental");
-  backfillIncomeLinks(DB.visitsOperations, "operations");
-  backfillIncomeLinks(DB.visitsLabs, "labs");
-  backfillIncomeLinks(DB.visitsRadiology, "radiology");
-  if (incomeBackfillNeeded) persist("income");
+  };
+  await backfillIncomeLinks(DB.visitsClinic, "clinic");
+  await backfillIncomeLinks(DB.visitsDental, "dental");
+  await backfillIncomeLinks(DB.visitsOperations, "operations");
+  await backfillIncomeLinks(DB.visitsLabs, "labs");
+  await backfillIncomeLinks(DB.visitsRadiology, "radiology");
+  if (incomeBackfillNeeded) await persist("income");
   if (isFirstRun) {
     ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll"].forEach(persist);
   }
@@ -1682,7 +1684,7 @@ async function reconcileVisitIncomeLinks() {
     const visits = Array.isArray(DB[source.dbKey]) ? DB[source.dbKey] : [];
     for (const visit of visits) {
       const previousLink = visit.linkedIncomeId || "";
-      syncVisitIncomeLink(visit, source.kindKey, true);
+      await syncVisitIncomeLink(visit, source.kindKey, true);
       if (previousLink !== (visit.linkedIncomeId || "")) changedVisitKeys.add(source.dbKey);
     }
   }
@@ -1761,11 +1763,13 @@ function mergeRemoteSnapshot(key, remoteValue, blockedIds = new Set()) {
     if (recentMutation && (!localTime || !remoteTime) && !syncRecordsEqual(key, localRecord, remoteRecord)) return localRecord;
     return remoteRecord;
   });
-  // Snapshot ناقصة لا تعني حذفًا. احتفظ بكل سجل محلي غائب عن اللقطة،
-  // باستثناء ID له Tombstone صريح؛ الحذف الوحيد المسموح يمر عبر Tombstone.
-  for (const localRecord of local) {
-    if (localRecord && localRecord.id != null && !remoteMap.has(localRecord.id)
-      && !blockedIds.has(String(localRecord.id))) merged.push(localRecord);
+  // Snapshot ناقصة لا تعني حذفًا أثناء Mutation/Outbox؛ خارج نافذة الحماية
+  // نثق باللقطة الحالية، مع بقاء Tombstone هو الحذف الصريح الوحيد.
+  if (recentMutation || SYNC_QUEUE_KEYS.has(String(key))) {
+    for (const localRecord of local) {
+      if (localRecord && localRecord.id != null && !remoteMap.has(localRecord.id)
+        && !blockedIds.has(String(localRecord.id))) merged.push(localRecord);
+    }
   }
   return merged;
 }
@@ -2233,7 +2237,7 @@ function payrollPaidAmount(rec) {
 // تعديل لاحق، ويحذفها تمامًا لو أصبح المدفوع فعليًا صفرًا (حالة "مؤجل") - لتفادى
 // الإدخال المزدوج (مرة فى المرتبات ومرة يدويًا فى المنصرف) مع الحفاظ على دقة
 // رصيد الخزينة (لا يدخلها إلا ما خرج فعلًا، لا أكثر ولا أقل).
-function syncPayrollExpenseLink(rec) {
+async function syncPayrollExpenseLink(rec) {
   const linked = rec.linkedExpenseId ? DB.expense.find(x => x.id === rec.linkedExpenseId) : null;
   const paidNow = payrollPaidAmount(rec);
   if (paidNow > 0) {
@@ -2254,19 +2258,20 @@ function syncPayrollExpenseLink(rec) {
       DB.expense.push(exp);
       rec.linkedExpenseId = exp.id;
     }
-    persist("expense");
+    await persist("expense");
   } else if (linked) {
+    await markSyncTombstone("expense", linked.id);
     const idx = DB.expense.findIndex(x => x.id === linked.id);
     if (idx > -1) DB.expense.splice(idx, 1);
     rec.linkedExpenseId = null;
-    persist("expense");
+    await persist("expense");
   }
 }
 // يربط مصروف المعمل الشهري لكل طبيب بحركة منصرف حقيقية فى دفتر الخزينة، بنفس
 // أسلوب ربط المرتبات أعلاه بالضبط - حتى يعكس رصيد الخزينة فعليًا المبلغ الذى
 // خرج بالفعل من المجمع لسداد المعمل، بدل أن يكون مجرد رقم فى حساب تسوية منفصل
 // لا يظهر أثره على النقدية الفعلية.
-function syncLabExpenseTreasuryLink(rec, doctorName) {
+async function syncLabExpenseTreasuryLink(rec, doctorName) {
   const linked = rec.linkedExpenseId ? DB.expense.find(x => x.id === rec.linkedExpenseId) : null;
   const amount = Number(rec.amount) || 0;
   if (amount > 0) {
@@ -2285,12 +2290,13 @@ function syncLabExpenseTreasuryLink(rec, doctorName) {
       DB.expense.push(exp);
       rec.linkedExpenseId = exp.id;
     }
-    persist("expense");
+    await persist("expense");
   } else if (linked) {
+    await markSyncTombstone("expense", linked.id);
     const idx = DB.expense.findIndex(x => x.id === linked.id);
     if (idx > -1) DB.expense.splice(idx, 1);
     rec.linkedExpenseId = null;
-    persist("expense");
+    await persist("expense");
   }
 }
 // يربط زيارة (عيادة أو أسنان) بها مبلغ محصَّل فعليًا ("المدفوع" أكبر من صفر) تلقائيًا
@@ -2309,7 +2315,7 @@ const VISIT_KIND_META = {
 function visitIncomeDesc(rec, kind) {
   return `${(VISIT_KIND_META[kind] || VISIT_KIND_META.clinic).label} — ${rec.patient}${rec.fileNo ? " (ملف " + rec.fileNo + ")" : ""}`;
 }
-function syncVisitIncomeLink(rec, kind, skipPersist) {
+async function syncVisitIncomeLink(rec, kind, skipPersist) {
   const stableReceiptNo = `V-${rec.fileNo || rec.id}`;
   // أصلح السجلات القديمة التي فقدت linkedIncomeId دون إنشاء قيد ثانٍ عند كل
   // تشغيل: ابحث أولًا عن القيد التلقائي ذي رقم الزيارة الثابت.
@@ -2335,12 +2341,13 @@ function syncVisitIncomeLink(rec, kind, skipPersist) {
       DB.income.push(inc);
     }
     rec.linkedIncomeId = linked ? linked.id : `visit-income-${kind}-${rec.id}`;
-    if (!skipPersist) persist("income");
+    if (!skipPersist) await persist("income");
   } else if (linked) {
+    await markSyncTombstone("income", linked.id);
     const idx = DB.income.findIndex(x => x.id === linked.id);
     if (idx > -1) DB.income.splice(idx, 1);
     rec.linkedIncomeId = null;
-    if (!skipPersist) persist("income");
+    if (!skipPersist) await persist("income");
   }
 }
 // بيانات تقرير الإقفال الشهري لشهر مُحدَّد بصيغة "YYYY-MM"
@@ -3682,7 +3689,7 @@ function renderVisitsPage(kind) {
     // حدّث سجل الدخل المرتبط أولًا، لكن لا تطلق كتابة مستقلة في الخلفية؛
     // سننتظر حفظ الدخل والزيارة بترتيب واضح حتى لا تعيد realtime أو طابور
     // الكتابة نسخة قديمة فوق الزيارة الجديدة.
-    syncVisitIncomeLink(rec, kind, true);
+    await syncVisitIncomeLink(rec, kind, true);
     // نعرض السجل المحلي فورًا أثناء رفعه إلى Firestore، ثم نؤكد النتيجة
     // برسالة نهائية بعد اكتمال persist() الفعلي.
     state.editId = null;
@@ -3984,7 +3991,7 @@ function renderServiceVisitsPage(kind) {
       }
       // نفس ترتيب الحفظ المضمون للعيادات: حدّث الدخل المرتبط محليًا ثم
       // انتظر حفظه قبل حفظ سجل الزيارة وإعادة رسم الشاشة.
-      syncVisitIncomeLink(rec, kind, true);
+      await syncVisitIncomeLink(rec, kind, true);
       state.editId = null;
       if (!editing) state.tablePage[`visits_${kind}`] = 1;
       route();
@@ -4285,7 +4292,7 @@ function renderPatientFilesPage(kind) {
       notes: `تحصيل دفعة من مستحق زيارة ${rec.date || ""}`, nextVisitDate: null, createdAt: nowISO(),
     };
     list.push(collectionVisit);
-    syncVisitIncomeLink(collectionVisit, kindKey);
+    await syncVisitIncomeLink(collectionVisit, kindKey);
     let pushFailedOnline = false;
     try {
       await persist(kindKey === "dental" ? "visitsDental" : "visitsClinic");
@@ -4351,7 +4358,7 @@ function renderPatientFilesPage(kind) {
         notes: `تحصيل دفعة من مستحقات قديمة (بدءًا من زيارة ${firstTouchedDate || ""})`, nextVisitDate: null, createdAt: nowISO(),
       };
       collectionList.push(collectionVisit);
-      syncVisitIncomeLink(collectionVisit, firstTouchedKindKey);
+      await syncVisitIncomeLink(collectionVisit, firstTouchedKindKey);
       touchedTables.add(firstTouchedKindKey === "dental" ? "visitsDental" : "visitsClinic");
     }
     let pushFailedOnline = false;
@@ -4776,11 +4783,12 @@ function renderMoneyPage(kind) {
   const cancelBtn = document.getElementById("cancelEdit");
   if (cancelBtn) cancelBtn.addEventListener("click", () => { state.editId = null; route(); });
   c.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => { state.editId = b.dataset.edit; route(); }));
-  c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+  c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف العمليات"); return; }
     if (!confirm("هل تريد حذف هذه العملية؟")) return;
     const idx = list.findIndex(v => v.id === b.dataset.del);
     const removed = idx > -1 ? list[idx] : null;
+    if (removed) await markSyncTombstone(isIncome ? "income" : "expense", removed.id);
     if (idx > -1) list.splice(idx, 1);
     // إصلاح: حذف قيد وارد/منصرف من هذه الصفحة مباشرة (بدل حذف الزيارة أو المرتب
     // أو مصروف المعمل المصدر) كان يترك السجل المصدر بمرجع "linkedIncomeId" أو
@@ -4797,8 +4805,11 @@ function renderMoneyPage(kind) {
       }
     }
     logActivity(isIncome ? "حذف عملية وارد" : "حذف عملية منصرف", kind, removed, null);
-    persist(isIncome ? "income" : "expense");
-    if (removed) { persist("visitsClinic"); persist("visitsDental"); persist("payroll"); persist("labExpenses"); }
+    await persist(isIncome ? "income" : "expense");
+    if (removed) {
+      await persist("visitsClinic"); await persist("visitsDental");
+      await persist("payroll"); await persist("labExpenses");
+    }
     showToast("تم الحذف");
     route();
   }));
@@ -5074,7 +5085,7 @@ function renderPayroll() {
     if (status === "جزئي" && paidAmount >= amount) { showToast("⚠️ المبلغ المدفوع فعليًا يجب أن يكون أقل من إجمالى المبلغ - استخدم حالة \"تم\" لو دُفع بالكامل"); return; }
     const rec = { id: editing ? editing.id : uid(), month: fd.get("month"), day: fd.get("day") ? Number(fd.get("day")) : null, name: fd.get("name"), type: fd.get("type"), amount, status, paidAmount: status === "جزئي" ? paidAmount : null, notes: fd.get("notes"), linkedExpenseId: editing ? (editing.linkedExpenseId || null) : null, createdAt: editing ? (editing.createdAt || null) : nowISO() };
     if (editing) { list[list.findIndex(v => v.id === editing.id)] = rec; } else { list.push(rec); }
-    syncPayrollExpenseLink(rec);
+    await syncPayrollExpenseLink(rec);
     // إصلاح جوهري (نفس إصلاح الوارد/المنصرف والعيادات): ننتظر persist() فعليًا
     // قبل route() بدل إطلاقها بدون انتظار، حتى لا يقرأ أى تحديث خلفى نسخة سحابية
     // قديمة لم يصلها هذا القيد بعد فيختفى مؤقتًا.
@@ -5104,18 +5115,20 @@ function renderPayroll() {
     if (!can("payroll","edit")) { showToast("⚠️ ليس لديك صلاحية تعديل"); return; }
     state.editId = b.dataset.edit; route();
   }));
-  c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+  c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!can("payroll","delete")) { showToast("⚠️ ليس لديك صلاحية حذف"); return; }
     const rec = list.find(v => v.id === b.dataset.del);
     const hasLinked = rec && rec.linkedExpenseId;
     if (!confirm(hasLinked ? "حذف هذا السجل؟ سيتم أيضًا حذف حركة الصرف المرتبطة به فى دفتر الخزينة." : "حذف هذا السجل؟")) return;
+    if (rec) await markSyncTombstone("payroll", rec.id);
     if (hasLinked) {
+      await markSyncTombstone("expense", rec.linkedExpenseId);
       const idx = DB.expense.findIndex(x => x.id === rec.linkedExpenseId);
       if (idx > -1) DB.expense.splice(idx, 1);
-      persist("expense");
+      await persist("expense");
     }
     list.splice(list.findIndex(v => v.id === b.dataset.del), 1);
-    persist("payroll"); showToast("تم الحذف"); route();
+    await persist("payroll"); showToast("تم الحذف"); route();
   }));
 }
 
@@ -5201,7 +5214,7 @@ function bindDoctorSettlementEvents(c) {
   const monthInput = document.getElementById("settlementMonthInput");
   if (monthInput) monthInput.addEventListener("change", () => { state.settlementMonth = monthInput.value; route(); });
 
-  c.querySelectorAll("[data-save-lab]").forEach(btn => btn.addEventListener("click", () => {
+  c.querySelectorAll("[data-save-lab]").forEach(btn => btn.addEventListener("click", async () => {
     const doctorId = btn.dataset.saveLab;
     const doctor = DB.doctors.find(d => d.id === doctorId);
     const input = c.querySelector(`.lab-expense-input[data-doctor="${doctorId}"]`);
@@ -5215,8 +5228,8 @@ function bindDoctorSettlementEvents(c) {
       DB.labExpenses.push(rec);
     }
     logActivity("تسجيل مصروف معمل", "payroll", null, { doctorId, month: ym, amount });
-    syncLabExpenseTreasuryLink(rec, doctor ? doctor.name : "طبيب");
-    persist("labExpenses");
+    await syncLabExpenseTreasuryLink(rec, doctor ? doctor.name : "طبيب");
+    await persist("labExpenses");
     saveToast("تم حفظ مصروف المعمل وتسجيله فى دفتر الخزينة");
     route();
   }));
@@ -6247,7 +6260,7 @@ function renderSettings() {
     logActivity("تغيير حالة طبيب", "settings", before, d.status);
     persist("doctors"); route();
   }));
-  c.querySelectorAll("[data-deldoc]").forEach(b => b.addEventListener("click", () => {
+  c.querySelectorAll("[data-deldoc]").forEach(b => b.addEventListener("click", async () => {
     if (!can("doctors","delete")) { showToast("⚠️ ليس لديك صلاحية"); return; }
     const docId = b.dataset.deldoc;
     // إصلاح سلامة محاسبية: حذف الطبيب نهائيًا لا يمسّ سجلات الزيارات القديمة
@@ -6267,9 +6280,10 @@ function renderSettings() {
     if (!confirm("حذف هذا الطبيب نهائيًا؟")) return;
     const idx = DB.doctors.findIndex(x => x.id === docId);
     const removed = idx > -1 ? DB.doctors[idx] : null;
+    if (removed) await markSyncTombstone("doctors", removed.id);
     if (idx > -1) DB.doctors.splice(idx, 1);
     logActivity("حذف طبيب", "settings", removed, null);
-    persist("doctors"); showToast("تم الحذف"); route();
+    await persist("doctors"); showToast("تم الحذف"); route();
   }));
   c.querySelectorAll("[data-editdoc]").forEach(b => b.addEventListener("click", () => {
     if (!can("doctors","edit")) { showToast("⚠️ ليس لديك صلاحية"); return; }
@@ -6296,14 +6310,15 @@ function renderSettings() {
   }
   c.querySelectorAll("[data-docup]").forEach(b => b.addEventListener("click", () => moveDoc(b.dataset.docup, -1)));
   c.querySelectorAll("[data-docdown]").forEach(b => b.addEventListener("click", () => moveDoc(b.dataset.docdown, 1)));
-  c.querySelectorAll("[data-delemp]").forEach(b => b.addEventListener("click", () => {
+  c.querySelectorAll("[data-delemp]").forEach(b => b.addEventListener("click", async () => {
     if (!can("employees","delete")) { showToast("⚠️ ليس لديك صلاحية"); return; }
     if (!confirm("حذف هذا الموظف؟")) return;
     const idx = DB.employees.findIndex(x => x.id === b.dataset.delemp);
     const removed = idx > -1 ? DB.employees[idx] : null;
+    if (removed) await markSyncTombstone("employees", removed.id);
     if (idx > -1) DB.employees.splice(idx, 1);
     logActivity("حذف موظف", "settings", removed, null);
-    persist("employees"); showToast("تم الحذف"); route();
+    await persist("employees"); showToast("تم الحذف"); route();
   }));
 }
 
