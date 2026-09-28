@@ -24,6 +24,7 @@
     "test:doctor-departments": "node tools/doctor-departments-test.js",
     "test:dashboard-imaging": "node tools/dashboard-imaging-test.js",
     "test:dashboard-patient-sources": "node tools/dashboard-patient-sources-test.js",
+    "test:dashboard-listeners": "node tools/dashboard-listeners-test.js",
     "test:settings-after-wipe": "node tools/settings-after-wipe-test.js",
     "test:account-permissions": "node tools/account-api-permissions-test.js",
     "test:permissions-refresh-race": "node tools/permissions-refresh-race-test.js",

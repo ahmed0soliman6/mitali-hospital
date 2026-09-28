@@ -2953,7 +2953,11 @@ function isMidEdit() {
 function backgroundRefreshKeysForPage(page = state.page) {
   const keys = pageKeys(page);
   const realtimeKeys = new Set(Array.isArray(PAGE_REALTIME_KEYS[page]) ? PAGE_REALTIME_KEYS[page] : []);
-  return keys.filter(key => !realtimeKeys.has(key) && !firestoreRealtimeUnsubs.has(String(key)));
+  return keys.filter(key =>
+    !realtimeKeys.has(key) &&
+    !firestoreRealtimeUnsubs.has(String(key)) &&
+    !(page === "dashboard" && SERVER_PAGED_KEYS.has(key))
+  );
 }
 async function backgroundRefreshCurrentPage() {
   if (BACKGROUND_REFRESH_IN_PROGRESS || STORAGE_MODE !== "firestore" || !navigator.onLine || !currentUser) return;
@@ -7842,7 +7846,7 @@ let realtimePageKey = "";
 // تحديث شبه لحظي للجدول المفتوح فقط. لا نراقب users أو كل جداول المستشفى،
 // ونترك بقية البيانات لقراءة الصفحة عند فتحها لتقليل الاستهلاك.
 const PAGE_REALTIME_KEYS = {
-  dashboard: ["income", "expense", ...REVENUE_VISIT_DB_KEYS],
+  dashboard: ["income", "expense"],
   clinic: ["visitsClinic"], dental: ["visitsDental"],
   operations: ["visitsOperations"], labs: ["visitsLabs"], radiology: ["visitsRadiology"],
   income: ["income"], expense: ["expense"], payroll: ["payroll"],
