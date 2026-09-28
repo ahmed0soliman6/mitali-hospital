@@ -22,7 +22,7 @@ assert.match(realtime[1], /visitsClinic/);
 assert.match(realtime[1], /visitsDental/);
 assert.match(index, /function backgroundRefreshKeysForPage\(page = state\.page\)/);
 assert.match(index, /const realtimeKeys = new Set\(Array\.isArray\(PAGE_REALTIME_KEYS\[page\]\)/);
-assert.match(index, /keys\.filter\(key => !realtimeKeys\.has\(key\) && !firestoreRealtimeUnsubs\.has\(String\(key\)\)\)/);
+assert.match(index, /keys\.filter\(key =>\s*!realtimeKeys\.has\(key\) &&\s*!firestoreRealtimeUnsubs\.has\(String\(key\)\)/);
 assert.match(index, /const keys = backgroundRefreshKeysForPage\(state\.page\)/);
 assert.match(index, /setInterval\(backgroundRefreshCurrentPage, 300000\)/);
 assert.doesNotMatch(index, /for \(const key of BACKGROUND_REFRESH_KEYS\)/);
