@@ -2,7 +2,7 @@ const { getAdmin } = require('../_lib/firebase-admin');
 
 function setCors(req, res) {
   const origin = String((req.headers && req.headers.origin) || '');
-  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || origin.endsWith('.run.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -47,12 +47,39 @@ async function aggregateCollection(api, name, month) {
       .where('date', '>=', `${month}-01`)
       .where('date', '<=', `${month}-${String(lastDay).padStart(2, '0')}`);
   }
-  const snapshot = await query.aggregate({
-    total: api.firestore.AggregateField.sum('amount'),
-    count: api.firestore.AggregateField.count(),
-  }).get();
-  const data = snapshot.data();
-  return { total: Number(data.total || 0), count: Number(data.count || 0) };
+  try {
+    const snapshot = await query.aggregate({
+      total: api.firestore.AggregateField.sum('amount'),
+      count: api.firestore.AggregateField.count(),
+    }).get();
+    const data = snapshot.data();
+    return { total: Number(data.total || 0), count: Number(data.count || 0) };
+  } catch (err) {
+    const rawCode = String(err && (err.code != null ? err.code : ''));
+    const rawMsg = String(err && (err.message || ''));
+    if (rawCode === '9' || rawCode.includes('FAILED_PRECONDITION') || rawMsg.includes('index') || rawMsg.includes('FAILED_PRECONDITION')) {
+      const snap = typeof query.select === 'function' ? await query.select('amount').get() : await query.get();
+      let total = 0;
+      let count = 0;
+      if (snap && typeof snap.forEach === 'function') {
+        snap.forEach(doc => {
+          count++;
+          const d = doc.data ? doc.data() : doc;
+          const amt = Number(d && d.amount);
+          if (!isNaN(amt)) total += amt;
+        });
+      } else if (snap && Array.isArray(snap.docs)) {
+        count = snap.docs.length;
+        for (const doc of snap.docs) {
+          const d = doc.data ? doc.data() : doc;
+          const amt = Number(d && d.amount);
+          if (!isNaN(amt)) total += amt;
+        }
+      }
+      return { total, count };
+    }
+    throw err;
+  }
 }
 
 module.exports = async function handler(req, res) {
