@@ -1919,6 +1919,22 @@ async function loadKeys(keys, options = {}) {
   if (unique.includes("settings")) DB.settings = ensureSettingsDefaults(DB.settings);
   DATA_VERSION++;
 }
+// قبل حذف زيارة لها قيد وارد مرتبط: صفحات اليوميات لا تحمّل جدول الوارد، فكان
+// DB.income فارغًا وقيد الوارد يبقى يتيمًا بعد حذف الزيارة. نحمّل الوارد كاملًا
+// (مرة واحدة في الجلسة) قبل الحذف؛ وإن تعذّر ذلك نمنع الحذف بدل ترك وارد يتيم.
+async function ensureIncomeLoadedForVisitDelete(target) {
+  if (STORAGE_MODE !== "firestore" || !currentUser) return true;
+  if (!target || !(target.linkedIncomeId || Number(target.paid) > 0)) return true;
+  if (PAGE_DATA_LOADED_AT["income"]) return true;
+  try {
+    await loadKeys(["income"], { preferCache: false, requireServer: true });
+    PAGE_DATA_LOADED_AT["income"] = Date.now();
+    return true;
+  } catch (err) {
+    console.warn("Income load before visit delete failed:", err && (err.code || err.message));
+    return false;
+  }
+}
 function pageKeys(page) { return PAGE_DATA_KEYS[page] || ["doctors", "employees", "settings"]; }
 // مصالحة idempotent: كل زيارة مدفوعة في الأقسام الخمسة تقابل قيدًا واحدًا.
 // لا نستبدل collection كاملة، بل نرفع السجلات التي أُضيفت/عُدّلت فقط.
@@ -4130,14 +4146,16 @@ function renderVisitsPage(kind) {
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف الزيارات"); return; }
     const target = list.find(v => v.id === b.dataset.del);
+    if (!(await ensureIncomeLoadedForVisitDelete(target))) { showToast("⚠️ تعذّر تحميل حركة الوارد المرتبطة — لم يتم الحذف. تأكد من الاتصال ثم أعد المحاولة"); return; }
     const linkedIncome = target && ((target.linkedIncomeId && DB.income.find(x => x.id === target.linkedIncomeId))
       || DB.income.find(x => x.receiptNo === `V-${target.fileNo || target.id}` && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات"));
-    const hasLinked = !!linkedIncome;
+    const linkedIncomeId = linkedIncome ? linkedIncome.id : ((target && target.linkedIncomeId) || null);
+    const hasLinked = !!linkedIncomeId;
     if (!confirm(hasLinked ? "هل تريد حذف هذه الزيارة؟ سيتم أيضًا حذف حركة الوارد المرتبطة بها فى دفتر الخزينة." : "هل تريد حذف هذه الزيارة؟")) return;
     try {
       if (hasLinked) {
-        await markSyncTombstone("income", linkedIncome.id);
-        const idx2 = DB.income.findIndex(x => x.id === linkedIncome.id);
+        await markSyncTombstone("income", linkedIncomeId);
+        const idx2 = DB.income.findIndex(x => x.id === linkedIncomeId);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
@@ -4386,14 +4404,16 @@ function renderServiceVisitsPage(kind) {
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف السجلات"); return; }
     const target = list.find(v => v.id === b.dataset.del);
+    if (!(await ensureIncomeLoadedForVisitDelete(target))) { showToast("⚠️ تعذّر تحميل حركة الوارد المرتبطة — لم يتم الحذف. تأكد من الاتصال ثم أعد المحاولة"); return; }
     const linkedIncome = target && ((target.linkedIncomeId && DB.income.find(x => x.id === target.linkedIncomeId))
       || DB.income.find(x => x.receiptNo === `V-${target.fileNo || target.id}` && x.notes === "تم إنشاؤه تلقائيًا من سجل الزيارات"));
-    const hasLinked = !!linkedIncome;
+    const linkedIncomeId = linkedIncome ? linkedIncome.id : ((target && target.linkedIncomeId) || null);
+    const hasLinked = !!linkedIncomeId;
     if (!confirm(hasLinked ? "هل تريد حذف هذا السجل؟ سيتم أيضًا حذف حركة الوارد المرتبطة به فى دفتر الخزينة." : "هل تريد حذف هذا السجل؟")) return;
     try {
       if (hasLinked) {
-        await markSyncTombstone("income", linkedIncome.id);
-        const idx2 = DB.income.findIndex(x => x.id === linkedIncome.id);
+        await markSyncTombstone("income", linkedIncomeId);
+        const idx2 = DB.income.findIndex(x => x.id === linkedIncomeId);
         if (idx2 > -1) DB.income.splice(idx2, 1);
         await persist("income");
       }
