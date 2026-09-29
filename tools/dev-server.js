@@ -16,10 +16,10 @@ const dataHandler = require('../api/admin/data');
 const profileHandler = require('../api/auth/profile');
 const summaryHandler = require('../api/financial/summary');
 
-app.all('/api/admin/account', (req, res, next) => Promise.resolve(accountHandler(req, res)).catch(next));
-app.all('/api/admin/data', (req, res, next) => Promise.resolve(dataHandler(req, res)).catch(next));
-app.all('/api/auth/profile', (req, res, next) => Promise.resolve(profileHandler(req, res)).catch(next));
-app.all('/api/financial/summary', (req, res, next) => Promise.resolve(summaryHandler(req, res)).catch(next));
+app.all('/api/admin/account', (req, res) => accountHandler(req, res));
+app.all('/api/admin/data', (req, res) => dataHandler(req, res));
+app.all('/api/auth/profile', (req, res) => profileHandler(req, res));
+app.all('/api/financial/summary', (req, res) => summaryHandler(req, res));
 
 // Static files
 app.use(express.static(projectRoot, {
@@ -36,22 +36,8 @@ app.use(express.static(projectRoot, {
 }));
 
 // SPA Fallback
-app.use((req, res, next) => {
-  if (req.method === 'GET' && !req.path.startsWith('/api/')) {
-    return res.sendFile(path.resolve(projectRoot, 'index.html'));
-  }
-  next();
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('[dev-server error]', err);
-  if (!res.headersSent) {
-    res.status(err.status || 500).json({
-      error: err.message || 'Internal server error',
-      code: err.code || 'server-error'
-    });
-  }
+app.use((req, res) => {
+  res.sendFile(path.resolve(projectRoot, 'index.html'));
 });
 
 // Primary port 3000 for AI Studio dev proxy

@@ -12,7 +12,6 @@
     "dev": "node tools/dev-server.js",
     "start": "node tools/dev-server.js",
     "build": "node tools/check-js-syntax.js",
-    "lint": "node tools/check-js-syntax.js",
     "check": "node tools/check-js-syntax.js",
     "test:contracts": "node tools/api-contract-tests.js",
     "test:security": "node tools/security-auth-tests.js",

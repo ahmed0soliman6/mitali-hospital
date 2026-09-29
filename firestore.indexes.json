@@ -4,22 +4,6 @@
       "collectionGroup": "income",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "date", "order": "ASCENDING" },
-        { "fieldPath": "amount", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "expense",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "date", "order": "ASCENDING" },
-        { "fieldPath": "amount", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "income",
-      "queryScope": "COLLECTION",
-      "fields": [
         { "fieldPath": "date", "order": "DESCENDING" },
         { "fieldPath": "__name__", "order": "DESCENDING" }
       ]

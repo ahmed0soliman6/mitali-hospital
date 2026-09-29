@@ -2,7 +2,7 @@ const { getAdmin } = require('../_lib/firebase-admin');
 
 function setCors(req, res) {
   const origin = String((req.headers && req.headers.origin) || '');
-  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || origin.endsWith('.run.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || (typeof process !== 'undefined' && process.env.ALLOW_RUN_APP_ORIGINS === '1' && origin.endsWith('.run.app')) || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -56,8 +56,8 @@ async function aggregateCollection(api, name, month) {
     return { total: Number(data.total || 0), count: Number(data.count || 0) };
   } catch (err) {
     const rawCode = String(err && (err.code != null ? err.code : ''));
-    const rawMsg = String(err && (err.message || ''));
-    if (rawCode === '9' || rawCode.includes('FAILED_PRECONDITION') || rawMsg.includes('index') || rawMsg.includes('FAILED_PRECONDITION')) {
+    if (rawCode === '9' || rawCode.includes('FAILED_PRECONDITION')) {
+      console.warn('[financial-summary] missing composite index, falling back to in-memory sum', name, month);
       const snap = typeof query.select === 'function' ? await query.select('amount').get() : await query.get();
       let total = 0;
       let count = 0;
