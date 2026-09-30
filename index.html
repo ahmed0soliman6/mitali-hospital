@@ -3561,6 +3561,29 @@ function pageKeyDatabaseKey(pageKey) {
   const visitMatch = /^visits_(clinic|dental|operations|labs|radiology)$/.exec(pageKey || "");
   return visitMatch ? PAGE_PRIMARY_KEY[visitMatch[1]] : null;
 }
+// لقطة الصفحة المخزنة (pageState.pages) لا تتحدّث بعد الحفظ/التعديل/الحذف؛ فكانت
+// اليومية ترسم من لقطة قديمة حتى إعادة تحميل الصفحة. نطابقها هنا مع البيانات الحيّة
+// DB[key] دون المساس باللقطة نفسها ولا بترتيب السيرفر:
+// (١) تعديل → تظهر النسخة الحيّة، (٢) حذف → يُخفى السجل، (٣) إضافة → تظهر أعلى الصفحة الأولى فقط.
+function reconcileVisitPageWithLive(snapshot, live, sortedList, isFirstPage, hasMore) {
+  const liveById = new Map();
+  for (const r of (Array.isArray(live) ? live : [])) if (r && r.id != null) liveById.set(String(r.id), r);
+  const seen = new Set();
+  const kept = [];
+  for (const r of snapshot) {
+    if (!r || r.id == null) continue;
+    const id = String(r.id);
+    seen.add(id);
+    if (liveById.has(id)) kept.push(liveById.get(id));
+  }
+  if (!isFirstPage) return kept;
+  // حماية: إن كان هناك صفحات أخرى فلا نُظهر سجلات أقدم من أقدم تاريخ في الصفحة الأولى.
+  const dates = snapshot.map(r => String((r && r.date) || "")).filter(Boolean).sort();
+  const floor = hasMore && dates.length ? dates[0] : "";
+  const added = (Array.isArray(sortedList) ? sortedList : []).filter(r =>
+    r && r.id != null && !seen.has(String(r.id)) && (!floor || String(r.date || "") >= floor));
+  return added.concat(kept);
+}
 function firestorePageInfo(pageKey, list) {
   const dbKey = pageKeyDatabaseKey(pageKey);
   if (STORAGE_MODE !== "firestore" || !dbKey || !getFirestorePageState(dbKey).pages[1]) return null;
@@ -3570,7 +3593,12 @@ function firestorePageInfo(pageKey, list) {
   // The server's primary-field + document-ID order is the Cursor order. Do
   // not sort this page again by createdAt/entryOrder, otherwise page 2 could
   // overlap page 1 or omit records between cursors.
-  const records = Array.isArray(pageState.pages[current]) ? pageState.pages[current].slice() : (Array.isArray(list) ? list : []);
+  const snapshotRecords = Array.isArray(pageState.pages[current]) ? pageState.pages[current].slice() : null;
+  const records = snapshotRecords
+    ? (/^visits_/.test(String(pageKey))
+        ? reconcileVisitPageWithLive(snapshotRecords, DB[dbKey], list, current === 1, !!pageState.hasMore[current])
+        : snapshotRecords)
+    : (Array.isArray(list) ? list : []);
   const start = records.length ? ((current - 1) * PAGE_SIZE + 1) : 0;
   const end = (current - 1) * PAGE_SIZE + records.length;
   return {
