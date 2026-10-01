@@ -1793,9 +1793,6 @@ async function preloadFinancialSummaries(page) {
   if (page === "income") {
     const selectedMonth = state.incomeMonth || todayISO().slice(0, 7);
     months.add(selectedMonth);
-    if (selectedMonth !== "all") {
-      loadFullFinancialMonth("income", selectedMonth);
-    }
   }
   if (page === "expense") months.add(state.expenseMonth || todayISO().slice(0, 7));
   if (page === "ledger") {
@@ -3025,6 +3022,8 @@ function backgroundRefreshKeysForPage(page = state.page) {
   return keys.filter(key =>
     !realtimeKeys.has(key) &&
     !firestoreRealtimeUnsubs.has(String(key)) &&
+    !SERVER_PAGED_KEYS.has(key) &&
+    key !== "income" && key !== "expense" &&
     !(page === "dashboard" && SERVER_PAGED_KEYS.has(key))
   );
 }
@@ -3605,7 +3604,7 @@ function waIconButtonHTML(phone, dataAttr, key) {
 // استخدام حقيقي لأشهر/سنوات (آلاف الصفوف) يصبح كل تنقّل بين الصفحات بطيئًا
 // وملحوظًا خصوصًا على الموبايلات المتوسطة. الحل: تقسيم صفحات بسيط - نعرض 50 صف
 // فقط فى كل مرة بدل الجدول كامل، مع أزرار تنقّل واضحة وعداد "يعرض X-Y من Z".
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 30;
 function pageKeyDatabaseKey(pageKey) {
   if (PAGE_PRIMARY_KEY[pageKey]) return PAGE_PRIMARY_KEY[pageKey];
   if (pageKey === "ledger" || pageKey === "money_income" || pageKey === "money_expense") return null;
@@ -5126,9 +5125,9 @@ function renderMoneyPage(kind) {
     pageState.pages = {};
     pageState.hasMore = {};
     pageState.querySignature = undefined;
-    if (isIncome && monthFilterSelect.value !== "all") {
-      loadFullFinancialMonth("income", monthFilterSelect.value).then(() => {
-        if (state.page === "income" && state.incomeMonth === monthFilterSelect.value) route();
+    if (STORAGE_MODE === "firestore" && monthFilterSelect.value !== "all") {
+      getFinancialSummary(monthFilterSelect.value).then(() => {
+        if (state.page === kind && state[monthStateKey] === monthFilterSelect.value) route();
       });
     }
     route();
@@ -8055,9 +8054,6 @@ async function refreshTableFromFirestore(key, changes) {
     if (key === "income" || key === "expense") {
       invalidateFinancialSummaries();
       invalidateFinancialMonthRecords(key);
-      if (key === "income" && state.page === "income" && state.incomeMonth && state.incomeMonth !== "all") {
-        loadFullFinancialMonth("income", state.incomeMonth, { force: true });
-      }
     }
     if (key === "staffAccounts" && currentUser) {
       const me = getCurrentAccount();

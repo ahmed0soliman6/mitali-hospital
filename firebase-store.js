@@ -220,17 +220,31 @@
       console.warn("Server financial summary API unavailable, using client Firestore aggregation:", apiErr?.message || apiErr);
     }
     await ready();
-    const incColl = db.collection(collectionName("income"));
-    const expColl = db.collection(collectionName("expense"));
-    const [incSnap, expSnap] = await Promise.all([incColl.get(), expColl.get()]);
-    const incDocs = value === "all" ? incSnap.docs : incSnap.docs.filter(d => String(d.data().date || "").startsWith(value));
-    const expDocs = value === "all" ? expSnap.docs : expSnap.docs.filter(d => String(d.data().date || "").startsWith(value));
-    const incTotal = incDocs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
-    const expTotal = expDocs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+    let incTotal = 0, incCount = 0, expTotal = 0, expCount = 0;
+    if (value !== "all" && /^\d{4}-\d{2}$/.test(value)) {
+      const [year, m] = value.split("-").map(Number);
+      const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
+      const startDate = `${value}-01`;
+      const endDate = `${value}-${String(lastDay).padStart(2, "0")}`;
+      const incColl = db.collection(collectionName("income"));
+      const expColl = db.collection(collectionName("expense"));
+      try {
+        const [incSnap, expSnap] = await Promise.all([
+          incColl.where("date", ">=", startDate).where("date", "<=", endDate).get(),
+          expColl.where("date", ">=", startDate).where("date", "<=", endDate).get(),
+        ]);
+        incCount = incSnap.docs.length;
+        expCount = expSnap.docs.length;
+        incTotal = incSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+        expTotal = expSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+      } catch (clientErr) {
+        console.warn("Client month summary fallback failed:", clientErr?.message || clientErr);
+      }
+    }
     return {
       month: value,
-      income: { total: incTotal, count: incDocs.length },
-      expense: { total: expTotal, count: expDocs.length },
+      income: { total: incTotal, count: incCount },
+      expense: { total: expTotal, count: expCount },
       totalIncome: incTotal,
       totalExpense: expTotal,
       net: incTotal - expTotal,
@@ -250,18 +264,13 @@
     const startDate = `${value}-01`;
     const endDate = `${value}-${String(lastDay).padStart(2, "0")}`;
     const coll = db.collection(collectionName(key));
-    let querySnap;
     try {
-      querySnap = await coll.where("date", ">=", startDate).where("date", "<=", endDate).get();
+      const querySnap = await coll.where("date", ">=", startDate).where("date", "<=", endDate).get();
+      return querySnap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     } catch (queryErr) {
-      const allSnap = await coll.get();
-      const filtered = allSnap.docs.filter(d => {
-        const dDate = String(d.data().date || "");
-        return dDate >= startDate && dDate <= endDate;
-      });
-      return filtered.map(d => Object.assign({ id: d.id }, d.data()));
+      console.warn(`getMonthRecords failed for ${key} ${value}:`, queryErr?.message || queryErr);
+      return [];
     }
-    return querySnap.docs.map(d => Object.assign({ id: d.id }, d.data()));
   }
 
   async function adminCreateAccount(payload) {
@@ -430,7 +439,7 @@
   function pageQuery(key, options = {}) {
     const config = PAGE_QUERY_CONFIG[key];
     if (!config) throw new Error(`No safe page query configured for: ${key}`);
-    const pageSize = Math.min(Math.max(Number(options.pageSize) || 50, 1), 50);
+    const pageSize = Math.min(Math.max(Number(options.pageSize) || 30, 1), 50);
     const orderField = options.orderField || config.primary;
     let query = db.collection(collectionName(key));
     const filters = Array.isArray(options.where) ? options.where : (options.where ? [options.where] : []);
