@@ -63,10 +63,11 @@ const V = (id, date, extra) => Object.assign({ id, date, patient: id }, extra ||
   assert.strictEqual(ids(pg.pageItems), '["new","a","b"]');
 }
 {
+  // جدول آخر غير مُدرَج (مثل income): السلوك القديم كما هو تمامًا
   const a = V('a', '2026-09-29'), n = V('new', '2026-09-30');
   const st = { currentPage: 1, pages: { 1: [a] }, hasMore: {} };
-  const fn = make('payroll', st, [a, n]);
-  const pg = fn('payroll', [n, a]);
+  const fn = make('income', st, [a, n]);
+  const pg = fn('income', [n, a]);
   assert.strictEqual(ids(pg.pageItems), '["a"]');
 }
 {

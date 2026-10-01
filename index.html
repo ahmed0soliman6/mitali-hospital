@@ -1828,6 +1828,21 @@ function getFirestorePageState(key) {
   }
   return FIRESTORE_PAGE_STATE[key];
 }
+// نطاق تاريخ يومية الزيارات حسب فلتر "عرض حسب" (يوم/شهر/سنة/الكل) لنفس اليومية.
+// يُستخدم لتمرير الفلتر إلى استعلام Firestore بدل قراءة "آخر 50 زيارة" مهما كان التاريخ.
+function visitPeriodDateRange(kindKey) {
+  const gran = state[`visitFilterGran_${kindKey}`] || "month";
+  let value = state[`visitFilterVal_${kindKey}`];
+  if (!value) value = gran === "day" ? todayISO() : gran === "year" ? todayISO().slice(0, 4) : gran === "month" ? todayISO().slice(0, 7) : null;
+  if (gran === "day" && /^\d{4}-\d{2}-\d{2}$/.test(String(value))) return { from: value, to: value };
+  if (gran === "month" && /^\d{4}-\d{2}$/.test(String(value))) {
+    const [year, month] = String(value).split("-").map(Number);
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return { from: `${value}-01`, to: `${value}-${String(lastDay).padStart(2, "0")}` };
+  }
+  if (gran === "year" && /^\d{4}$/.test(String(value))) return { from: `${value}-01-01`, to: `${value}-12-31` };
+  return null;
+}
 function pageQueryOptions(key, page) {
   const options = { pageSize: PAGE_SIZE, cursor: getFirestorePageState(key).cursors[page] || null };
   const monthKey =
@@ -1852,6 +1867,18 @@ function pageQueryOptions(key, page) {
       options.where = [
         { field: "month", op: ">=", value: selectedMonth },
         { field: "month", op: "<=", value: selectedMonth },
+      ];
+    }
+  }
+  // اليوميات فقط: فلتر الفترة يُطبَّق في الاستعلام نفسه. بقية الصفحات (الرئيسية، التقارير...)
+  // تبقى على سلوكها الحالي دون فلتر حتى لا تتغير أرقامها بتغيير فلتر يومية.
+  const visitSource = VISIT_SOURCE_DEFINITIONS.find(source => source.dbKey === key);
+  if (visitSource && state.page === visitSource.kindKey) {
+    const range = visitPeriodDateRange(visitSource.kindKey);
+    if (range) {
+      options.where = [
+        { field: "date", op: ">=", value: range.from },
+        { field: "date", op: "<=", value: range.to },
       ];
     }
   }
@@ -1934,6 +1961,32 @@ async function ensureIncomeLoadedForVisitDelete(target) {
     console.warn("Income load before visit delete failed:", err && (err.code || err.message));
     return false;
   }
+}
+// قيد الوارد التلقائي للزيارة معرّفه: visit-income-<القسم>-<رقم الزيارة>.
+// نستخرج منه الزيارة المرتبطة لنحذفها مع القيد عند حذف الوارد من صفحة الوارد.
+function visitLinkFromIncome(inc) {
+  const m = /^visit-income-(clinic|dental|operations|labs|radiology)-(.+)$/.exec(String((inc && inc.id) || ""));
+  if (!m) return null;
+  const source = VISIT_SOURCE_DEFINITIONS.find(def => def.kindKey === m[1]);
+  return source ? { source, visitId: m[2] } : null;
+}
+// صفحة الوارد لا تحمّل جداول الزيارات؛ نحمّل أول صفحة من يومية القسم قبل الحذف حتى
+// لا تُكتب مصفوفة فارغة في الكاش وخط الأساس. إن تعذّر التحميل نمنع الحذف بالكامل.
+async function loadVisitsBeforeCascade(link) {
+  if (STORAGE_MODE !== "firestore" || !currentUser) return true;
+  return !!(await loadFirestorePage(link.source.dbKey, 1, { force: true }));
+}
+async function cascadeDeleteVisitForIncome(link) {
+  const key = link.source.dbKey;
+  if (!Array.isArray(DB[key])) DB[key] = [];
+  await markSyncTombstone(key, link.visitId);
+  const idx = DB[key].findIndex(v => v && String(v.id) === String(link.visitId));
+  const removed = idx > -1 ? DB[key][idx] : null;
+  if (idx > -1) DB[key].splice(idx, 1);
+  logActivity("حذف زيارة بسبب حذف الوارد المرتبط", link.source.kindKey, removed || { id: link.visitId }, null);
+  await persist(key);
+  // لقطة الصفحة المخزنة لم تعد صالحة: تُقرأ من جديد عند فتح اليومية.
+  if (STORAGE_MODE === "firestore") getFirestorePageState(key).pages = {};
 }
 function pageKeys(page) { return PAGE_DATA_KEYS[page] || ["doctors", "employees", "settings"]; }
 // مصالحة idempotent: كل زيارة مدفوعة في الأقسام الخمسة تقابل قيدًا واحدًا.
@@ -3568,13 +3621,15 @@ function pageKeyDatabaseKey(pageKey) {
 function reconcileVisitPageWithLive(snapshot, live, sortedList, isFirstPage, hasMore) {
   const liveById = new Map();
   for (const r of (Array.isArray(live) ? live : [])) if (r && r.id != null) liveById.set(String(r.id), r);
+  const allowed = Array.isArray(sortedList) ? new Set(sortedList.filter(r => r && r.id != null).map(r => String(r.id))) : null;
   const seen = new Set();
   const kept = [];
   for (const r of snapshot) {
     if (!r || r.id == null) continue;
     const id = String(r.id);
     seen.add(id);
-    if (liveById.has(id)) kept.push(liveById.get(id));
+    // الصف يظهر فقط إن كان حيًّا (لم يُحذف) ويطابق الفلتر الظاهر في الصفحة (الفترة).
+    if (liveById.has(id) && (!allowed || allowed.has(id))) kept.push(liveById.get(id));
   }
   if (!isFirstPage) return kept;
   // حماية: إن كان هناك صفحات أخرى فلا نُظهر سجلات أقدم من أقدم تاريخ في الصفحة الأولى.
@@ -3595,7 +3650,7 @@ function firestorePageInfo(pageKey, list) {
   // overlap page 1 or omit records between cursors.
   const snapshotRecords = Array.isArray(pageState.pages[current]) ? pageState.pages[current].slice() : null;
   const records = snapshotRecords
-    ? (/^visits_/.test(String(pageKey))
+    ? (/^(visits_(clinic|dental|operations|labs|radiology)|payroll|auditLog)$/.test(String(pageKey))
         ? reconcileVisitPageWithLive(snapshotRecords, DB[dbKey], list, current === 1, !!pageState.hasMore[current])
         : snapshotRecords)
     : (Array.isArray(list) ? list : []);
@@ -4026,7 +4081,7 @@ function renderVisitsPage(kind) {
     if (formLocked) return;
     if (editing ? !canEdit : !canAdd) { showToast("⚠️ ليس لديك صلاحية كافية لهذا الإجراء"); return; }
     const saveKey = isDental ? "visitsDental" : "visitsClinic";
-    if (ACTIVE_UI_SAVES.has(saveKey)) return;
+    if (ACTIVE_UI_SAVES.has(saveKey)) { showToast("⏳ جارٍ حفظ العملية السابقة — انتظر لحظة حتى تظهر في الجدول قبل إعادة المحاولة"); return; }
     ACTIVE_UI_SAVES.add(saveKey);
     formLocked = true;
     // إصلاح جوهري: لو حصل أي خطأ غير متوقع أثناء الحفظ (مثلاً بيانات ناقصة أو
@@ -4353,7 +4408,7 @@ function renderServiceVisitsPage(kind) {
     if (formLocked) return;
     if (editing ? !canEdit : !canAdd) { showToast("⚠️ ليس لديك صلاحية كافية لهذا الإجراء"); return; }
     const saveKey = cfg.listKey;
-    if (ACTIVE_UI_SAVES.has(saveKey)) return;
+    if (ACTIVE_UI_SAVES.has(saveKey)) { showToast("⏳ جارٍ حفظ العملية السابقة — انتظر لحظة حتى تظهر في الجدول قبل إعادة المحاولة"); return; }
     ACTIVE_UI_SAVES.add(saveKey);
     formLocked = true;
     try {
@@ -5186,7 +5241,7 @@ function renderMoneyPage(kind) {
     }
     rec[isIncome ? "receiver" : "responsible"] = fd.get("person");
     const moneySaveKey = isIncome ? "income" : "expense";
-    if (ACTIVE_UI_SAVES.has(moneySaveKey)) return;
+    if (ACTIVE_UI_SAVES.has(moneySaveKey)) { showToast("⏳ جارٍ حفظ العملية السابقة — انتظر لحظة حتى تظهر في الجدول قبل إعادة المحاولة"); return; }
     ACTIVE_UI_SAVES.add(moneySaveKey);
     if (editing) {
       const idx = list.findIndex(v => v.id === editing.id);
@@ -5229,7 +5284,11 @@ function renderMoneyPage(kind) {
   c.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => { state.editId = b.dataset.edit; route(); }));
   c.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!canDelete) { showToast("⚠️ ليس لديك صلاحية حذف العمليات"); return; }
-    if (!confirm("هل تريد حذف هذه العملية؟")) return;
+    const linkTarget = isIncome ? list.find(v => v.id === b.dataset.del) : null;
+    const visitLink = linkTarget ? visitLinkFromIncome(linkTarget) : null;
+    if (visitLink && !can(visitLink.source.kindKey, "delete")) { showToast("⚠️ هذه الحركة مرتبطة بزيارة ولا تملك صلاحية حذف الزيارات في هذا القسم"); return; }
+    if (!confirm(visitLink ? `هذه الحركة مرتبطة بزيارة في يومية ${visitLink.source.kind}. سيتم حذف الزيارة أيضًا من اليومية. هل تريد المتابعة؟` : "هل تريد حذف هذه العملية؟")) return;
+    if (visitLink && !(await loadVisitsBeforeCascade(visitLink))) { showToast("⚠️ تعذّر تحميل اليومية المرتبطة — لم يتم الحذف. تأكد من الاتصال ثم أعد المحاولة"); return; }
     const idx = list.findIndex(v => v.id === b.dataset.del);
     const removed = idx > -1 ? list[idx] : null;
     if (removed) await markSyncTombstone(isIncome ? "income" : "expense", removed.id);
@@ -5242,6 +5301,7 @@ function renderMoneyPage(kind) {
     if (removed) {
       if (isIncome) {
         for (const source of VISIT_SOURCE_DEFINITIONS) {
+          if (visitLink && source.dbKey === visitLink.source.dbKey) continue; // ستُحذف الزيارة نفسها أدناه
           let changed = false;
           for (const visit of DB[source.dbKey] || []) {
             if (String(visit.linkedIncomeId || "") === String(removed.id)) {
@@ -5259,6 +5319,7 @@ function renderMoneyPage(kind) {
     logActivity(isIncome ? "حذف عملية وارد" : "حذف عملية منصرف", kind, removed, null);
     await persist(isIncome ? "income" : "expense");
     if (removed && !isIncome) { await persist("payroll"); await persist("labExpenses"); }
+    if (visitLink) await cascadeDeleteVisitForIncome(visitLink);
     showToast("تم الحذف");
     route();
   }));
