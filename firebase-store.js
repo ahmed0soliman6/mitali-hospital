@@ -220,31 +220,33 @@
       console.warn("Server financial summary API unavailable, using client Firestore aggregation:", apiErr?.message || apiErr);
     }
     await ready();
-    let incTotal = 0, incCount = 0, expTotal = 0, expCount = 0;
-    if (value !== "all" && /^\d{4}-\d{2}$/.test(value)) {
-      const [year, m] = value.split("-").map(Number);
-      const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
-      const startDate = `${value}-01`;
-      const endDate = `${value}-${String(lastDay).padStart(2, "0")}`;
-      const incColl = db.collection(collectionName("income"));
-      const expColl = db.collection(collectionName("expense"));
-      try {
-        const [incSnap, expSnap] = await Promise.all([
-          incColl.where("date", ">=", startDate).where("date", "<=", endDate).get(),
-          expColl.where("date", ">=", startDate).where("date", "<=", endDate).get(),
-        ]);
-        incCount = incSnap.docs.length;
-        expCount = expSnap.docs.length;
-        incTotal = incSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
-        expTotal = expSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
-      } catch (clientErr) {
-        console.warn("Client month summary fallback failed:", clientErr?.message || clientErr);
-      }
+    // لا نقرأ الجداول كاملة هنا، ولا نُرجع أصفارًا: الأصفار تبدو أرقامًا صحيحة وتُخزَّن في الكاش.
+    // نرمي استثناءً ليحسب index.html المجاميع من البيانات المحمّلة (cachedFinancialSummary).
+    if (value === "all" || !/^\d{4}-\d{2}$/.test(value)) {
+      throw new Error("financial-summary-unavailable");
     }
+    const [year, m] = value.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
+    const startDate = `${value}-01`;
+    const endDate = `${value}-${String(lastDay).padStart(2, "0")}`;
+    const incColl = db.collection(collectionName("income"));
+    const expColl = db.collection(collectionName("expense"));
+    let incSnap, expSnap;
+    try {
+      [incSnap, expSnap] = await Promise.all([
+        incColl.where("date", ">=", startDate).where("date", "<=", endDate).get(),
+        expColl.where("date", ">=", startDate).where("date", "<=", endDate).get(),
+      ]);
+    } catch (clientErr) {
+      console.warn("Client month summary fallback failed:", clientErr?.message || clientErr);
+      throw clientErr;
+    }
+    const incTotal = incSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
+    const expTotal = expSnap.docs.reduce((sum, d) => sum + (Number(d.data().amount) || 0), 0);
     return {
       month: value,
-      income: { total: incTotal, count: incCount },
-      expense: { total: expTotal, count: expCount },
+      income: { total: incTotal, count: incSnap.docs.length },
+      expense: { total: expTotal, count: expSnap.docs.length },
       totalIncome: incTotal,
       totalExpense: expTotal,
       net: incTotal - expTotal,

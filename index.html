@@ -1870,6 +1870,9 @@ function pageQueryOptions(key, page) {
   // اليوميات فقط: فلتر الفترة يُطبَّق في الاستعلام نفسه. بقية الصفحات (الرئيسية، التقارير...)
   // تبقى على سلوكها الحالي دون فلتر حتى لا تتغير أرقامها بتغيير فلتر يومية.
   const visitSource = VISIT_SOURCE_DEFINITIONS.find(source => source.dbKey === key);
+  // نافذة 30 سجلًا لصفحة اليومية نفسها فقط. الرئيسية والتقارير والمستحقات وملفات المرضى
+  // تحسب أرقامها من أول صفحة، فتبقى 50 كما كانت حتى لا تتسع فجوة الأرقام المقطوعة.
+  if (visitSource && state.page !== visitSource.kindKey) options.pageSize = 50;
   if (visitSource && state.page === visitSource.kindKey) {
     const range = visitPeriodDateRange(visitSource.kindKey);
     if (range) {
@@ -8093,7 +8096,7 @@ function subscribeFirestoreRealtime(page = state.page) {
     try {
       const currentPage = SERVER_PAGED_KEYS.has(key) ? (getFirestorePageState(key).currentPage || 1) : 1;
       const listenerOptions = SERVER_PAGED_KEYS.has(key)
-        ? Object.assign(pageQueryOptions(key, currentPage), { pageSize: PAGE_SIZE })
+        ? pageQueryOptions(key, currentPage)
         : null;
       const listener = SERVER_PAGED_KEYS.has(key) && window.MitaliFirebase.subscribePage
         ? window.MitaliFirebase.subscribePage(key, listenerOptions, (changes) => refreshTableFromFirestore(key, changes), (error) => {
