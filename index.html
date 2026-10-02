@@ -3949,7 +3949,7 @@ function renderVisitsPage(kind) {
           <div class="field"><label>ملاحظات</label><input type="text" name="notes" value="${esc(editing?.notes)}"></div>
           <div class="field"><label>موعد المتابعة</label><input type="date" name="nextVisitDate" value="${editing?.nextVisitDate || ""}"></div>
           <div class="field" style="align-self:end; display:flex; gap:8px;">
-            <button type="submit" class="btn">${editing ? "حفظ التعديل" : "تسجيل الزيارة"}</button>
+            <button type="submit" class="btn"${ACTIVE_UI_SAVES.has(isDental ? "visitsDental" : "visitsClinic") ? ' disabled style="opacity:0.65; pointer-events:none;"' : ""}>${ACTIVE_UI_SAVES.has(isDental ? "visitsDental" : "visitsClinic") ? "⏳ جارٍ تسجيل الزيارة..." : (editing ? "حفظ التعديل" : "تسجيل الزيارة")}</button>
             ${editing ? `<button type="button" class="btn ghost" id="cancelEdit">إلغاء</button>` : ""}
           </div>
         </div>
@@ -4053,6 +4053,14 @@ function renderVisitsPage(kind) {
     if (ACTIVE_UI_SAVES.has(saveKey)) { showToast("⏳ جارٍ حفظ العملية السابقة — انتظر لحظة حتى تظهر في الجدول قبل إعادة المحاولة"); return; }
     ACTIVE_UI_SAVES.add(saveKey);
     formLocked = true;
+    const submitBtn = visitForm.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.dataset.originalText = submitBtn.textContent;
+      submitBtn.textContent = editing ? "⏳ جارٍ حفظ التعديل..." : "⏳ جارٍ تسجيل الزيارة...";
+      submitBtn.style.pointerEvents = "none";
+      submitBtn.style.opacity = "0.65";
+    }
     // إصلاح جوهري: لو حصل أي خطأ غير متوقع أثناء الحفظ (مثلاً بيانات ناقصة أو
     // خطأ برمجي فى خطوة فرعية)، كان النموذج يفضل "مقفولًا" للأبد بصمت بسبب القفل
     // أعلاه بدون أي رسالة توضّح السبب - يبدو للمستخدم وكأن "النظام لا يسجل" رغم
@@ -4063,6 +4071,12 @@ function renderVisitsPage(kind) {
     } catch (err) {
       console.error("Visit save error:", err);
       formLocked = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = submitBtn.dataset.originalText || (editing ? "حفظ التعديل" : "تسجيل الزيارة");
+        submitBtn.style.pointerEvents = "";
+        submitBtn.style.opacity = "";
+      }
       showToast("⚠️ حدث خطأ غير متوقع أثناء الحفظ - حاول مرة أخرى");
     } finally {
       ACTIVE_UI_SAVES.delete(saveKey);
@@ -4145,6 +4159,7 @@ function renderVisitsPage(kind) {
     } else {
       saveToast(editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة بنجاح");
     }
+    ACTIVE_UI_SAVES.delete(saveKey);
     route();
     }
   });
@@ -4291,7 +4306,7 @@ function renderServiceVisitsPage(kind) {
         <div class="diary-bottom-row">
           <div class="field" style="grid-column:span 2;"><label>ملاحظات</label><input type="text" name="notes" value="${esc(editing?.notes)}"></div>
           <div class="field" style="align-self:end; display:flex; gap:8px;">
-            <button type="submit" class="btn">${editing ? "حفظ التعديل" : "تسجيل"}</button>
+            <button type="submit" class="btn"${ACTIVE_UI_SAVES.has(cfg.listKey) ? ' disabled style="opacity:0.65; pointer-events:none;"' : ""}>${ACTIVE_UI_SAVES.has(cfg.listKey) ? "⏳ جارٍ التسجيل..." : (editing ? "حفظ التعديل" : "تسجيل")}</button>
             ${editing ? `<button type="button" class="btn ghost" id="cancelEdit">إلغاء</button>` : ""}
           </div>
         </div>
@@ -4380,11 +4395,25 @@ function renderServiceVisitsPage(kind) {
     if (ACTIVE_UI_SAVES.has(saveKey)) { showToast("⏳ جارٍ حفظ العملية السابقة — انتظر لحظة حتى تظهر في الجدول قبل إعادة المحاولة"); return; }
     ACTIVE_UI_SAVES.add(saveKey);
     formLocked = true;
+    const submitBtn = svcForm.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.dataset.originalText = submitBtn.textContent;
+      submitBtn.textContent = editing ? "⏳ جارٍ حفظ التعديل..." : "⏳ جارٍ التسجيل...";
+      submitBtn.style.pointerEvents = "none";
+      submitBtn.style.opacity = "0.65";
+    }
     try {
       await runServiceSave();
     } catch (err) {
       console.error("Service visit save error:", err);
       formLocked = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = submitBtn.dataset.originalText || (editing ? "حفظ التعديل" : "تسجيل");
+        submitBtn.style.pointerEvents = "";
+        submitBtn.style.opacity = "";
+      }
       showToast("⚠️ حدث خطأ غير متوقع أثناء الحفظ - حاول مرة أخرى");
     } finally {
       ACTIVE_UI_SAVES.delete(saveKey);
@@ -4436,6 +4465,7 @@ function renderServiceVisitsPage(kind) {
       } else {
         saveToast(editing ? "تم حفظ التعديل" : "تم التسجيل بنجاح");
       }
+      ACTIVE_UI_SAVES.delete(saveKey);
       route();
     }
   });
