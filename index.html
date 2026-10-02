@@ -1639,7 +1639,7 @@ const REVENUE_VISIT_DB_KEYS = Object.freeze(
 );
 
 const PAGE_DATA_KEYS = {
-  dashboard: ["doctors", ...REVENUE_VISIT_DB_KEYS, "income", "expense"],
+  dashboard: ["income", "expense"],
   clinic: ["doctors", "visitsClinic"], dental: ["doctors", "visitsDental"],
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
   radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
@@ -3749,24 +3749,15 @@ function destroyCharts() { Object.values(charts).forEach(c => c && c.destroy());
 
 function renderDashboard() {
   const c = document.getElementById("content");
-  const visits = allRevenueVisits();
   const today = todayISO();
   const allFinancialSummary = cachedFinancialSummary("all");
   const totalRevenue = Number(allFinancialSummary.totalIncome || allFinancialSummary.income.total || 0);
   const totalExpense = Number(allFinancialSummary.totalExpense || allFinancialSummary.expense.total || 0);
   const balance = currentBalance();
-  const overdue = visits.filter(v => visitRemaining(v) > 0).length;
-  const revenueVisits = allRevenueVisits();
-  const dashboardShares = aggregateAccountingShares(revenueVisits, DB.income, DB.labExpenses);
-  const clinicShare = dashboardShares.clinic;
-  const docShare = dashboardShares.doc;
   const dentalRevenue = DB.income.filter(x => x.category === "أسنان").reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const clinicRevenue = DB.income.filter(x => x.category === "كشف").reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const selectedPeriod = state.dashboardPeriod || "today";
   const periodStat = periodFinancials(selectedPeriod);
-  const docList = sortedDoctors();
-  const selectedDocId = state.dashboardDoctor && docList.some(d => d.id === state.dashboardDoctor) ? state.dashboardDoctor : "";
-  const docStat = doctorRevenue(selectedDocId);
 
   // آخر 7 أيام
   const days = [];
@@ -3815,39 +3806,17 @@ function renderDashboard() {
       </div>
       <div class="card kpi dashboard-link-card" data-dashboard-page="outstandingBalancesClinic" role="button" tabindex="0" title="فتح المرضى المتأخرين بالسداد">
         <div class="label">مرضى متأخرون بالسداد</div>
-        <div class="value" style="color:#8A6300;">${fmtInt(overdue)}</div>
-        <div class="delta">من إجمالي ${fmtInt(visits.length)} زيارة</div>
+        <div class="value" style="color:#8A6300; font-size:16px;">عرض القائمة ←</div>
+        <div class="delta">قائمة المستحقات المحدّثة</div>
       </div>
     </div>
 
-    <div class="grid grid-4" style="margin-bottom:16px;">
+    <div class="grid grid-3" style="margin-bottom:16px;">
       <div class="card kpi"><div class="label">إجمالي الإيرادات (كل الفترات)</div><div class="value">${fmt(totalRevenue)} ج.م</div></div>
       <div class="card kpi"><div class="label">إيراد العيادات</div><div class="value" style="color:#2A6DA6;">${fmt(clinicRevenue)} ج.م</div></div>
       <div class="card kpi"><div class="label">إيراد الأسنان</div><div class="value" style="color:#6A3FA0;">${fmt(dentalRevenue)} ج.م</div></div>
-      <div class="card kpi" title="الصافي بعد حصة الطبيب ومصروف المعمل عبر كل الأقسام"><div class="label">صافى حصة المجمع / حصة الأطباء</div><div class="value" style="font-size:16px; color:${clinicShare < 0 ? "var(--expense)" : "var(--ink)"};">${fmt(clinicShare)} / ${fmt(docShare)}</div></div>
     </div>
 
-    <div class="card" style="margin-bottom:16px;">
-      <div class="section-title" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-        <span>👨‍⚕️ إيراد الطبيب</span>
-        <select id="dashboardDoctorSelect" style="font-size:12.5px; padding:5px 10px; border-radius:8px; border:1px solid var(--border,#ccc); background:var(--card); color:var(--ink);">
-          <option value="">اختر طبيبًا...</option>
-          ${docList.map(d => `<option value="${d.id}" ${selectedDocId === d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}
-        </select>
-      </div>
-      ${selectedDocId ? `
-      <div class="grid grid-2" style="gap:12px; margin-top:12px;">
-        <div class="card kpi" style="box-shadow:none; border:1px solid var(--border,#eee);">
-          <div class="label">إجمالي المحصَّل من زياراته</div>
-          <div class="value" style="color:#2A6DA6;">${fmt(docStat.total)} ج.م</div>
-          <div class="delta">${fmtInt(docStat.count)} زيارة</div>
-        </div>
-        <div class="card kpi" style="box-shadow:none; border:1px solid var(--border,#eee);">
-          <div class="label">حصة الطبيب</div>
-          <div class="value" style="color:#C79A3E;">${fmt(docStat.share)} ج.م</div>
-        </div>
-      </div>` : `<div class="hint" style="margin-top:10px;">اختر طبيبًا من القائمة أعلاه لعرض إجمالي إيراده وحصته.</div>`}
-    </div>
 
     <div class="two-col">
       <div class="card">
@@ -3874,8 +3843,6 @@ function renderDashboard() {
 
   const periodSelect = document.getElementById("dashboardPeriodSelect");
   if (periodSelect) periodSelect.addEventListener("change", () => { state.dashboardPeriod = periodSelect.value; route(); });
-  const doctorSelect = document.getElementById("dashboardDoctorSelect");
-  if (doctorSelect) doctorSelect.addEventListener("change", () => { state.dashboardDoctor = doctorSelect.value; route(); });
   const goToBackupBtn = document.getElementById("goToBackupBtn");
   if (goToBackupBtn) goToBackupBtn.addEventListener("click", () => { state.page = "settings"; route(); });
   c.querySelectorAll("[data-dashboard-page]").forEach(card => {

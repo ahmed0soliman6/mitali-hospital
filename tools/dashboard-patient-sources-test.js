@@ -18,7 +18,7 @@ for (const [dbKey, kind, kindKey] of requiredSources) {
   assert.match(source, new RegExp(`kindKey: "${kindKey}"`), `${kindKey} must have a stable key`);
 }
 
-assert.match(source, /dashboard: \["doctors", \.\.\.REVENUE_VISIT_DB_KEYS, "income", "expense"\]/);
+assert.match(source, /const PAGE_DATA_KEYS = \{[\s\S]*?\n  dashboard: \["income", "expense"\],/);
 assert.match(source, /function visitsFromSources\(sources = VISIT_SOURCE_DEFINITIONS\)/);
 assert.match(source, /function allVisits\(\) \{\s*return visitsFromSources\(VISIT_SOURCE_DEFINITIONS\.slice\(0, 2\)\);/s);
 assert.match(source, /function allRevenueVisits\(\) \{\s*return visitsFromSources\(VISIT_SOURCE_DEFINITIONS\);/s);

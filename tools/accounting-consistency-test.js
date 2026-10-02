@@ -16,7 +16,7 @@ assert.equal(doctorPay + clinicShare, netRevenue, 'doctor and clinic shares must
 assert.match(source, /function doctorSettlementBreakdown\(doctor, visits, lumpIncome, labExpense\)/, 'all doctor settlements must use one shared breakdown');
 assert.match(source, /const clinicShare = netRevenue - docShare;/, 'clinic share must be the signed residual after doctor share');
 assert.match(source, /function aggregateAccountingShares\(visits, incomeRows, labExpenses\)/, 'dashboard and closing reports must use central accounting aggregation');
-assert.match(source, /const dashboardShares = aggregateAccountingShares\(revenueVisits, DB\.income, DB\.labExpenses\)/, 'dashboard shares must include all departments and lab expenses');
+assert.doesNotMatch(source, /const dashboardShares = aggregateAccountingShares\(/, 'dashboard must not compute accounting shares from a partial first-page visit window');
 assert.match(source, /const closingShares = aggregateAccountingShares\(visits, incomeThisMonth, DB\.labExpenses\.filter\(x => x\.month === ym\)\)/, 'monthly closing must use the same accounting aggregation');
 assert.match(source, /function allRevenueVisits\(\)/, 'all revenue departments must have a shared visit source');
 assert.match(source, /function renderAnnualReportPrint\(\)[\s\S]*?const visits = allRevenueVisits\(\)/, 'annual report must include operations/labs/radiology');
