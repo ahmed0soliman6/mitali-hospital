@@ -29,7 +29,8 @@ assert.ok(realtime, 'PAGE_REALTIME_KEYS must be declared');
 assert.match(realtime[1], /dashboard: \["income", "expense"\]/);
 assert.match(realtime[1], /income: \["income"\]/);
 assert.match(realtime[1], /settings: \["doctors", "employees", "settings", "categories", "specialties"\]/);
-assert.match(realtime[1], /outstandingBalances: \["doctors", \.\.\.REVENUE_VISIT_DB_KEYS\]/);
+assert.match(realtime[1], /outstandingBalances: \["doctors"\]/);
+assert.match(realtime[1], /outstandingBalancesClinic: \[\], outstandingBalancesDental: \[\]/);
 assert.doesNotMatch(realtime[1], /staffAccounts/);
 
 console.log('PASS dashboard-patient-sources-test: all five visit departments share one source map and reach dashboard/patient aggregation safely.');

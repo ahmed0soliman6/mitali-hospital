@@ -19,7 +19,8 @@ assert.match(source, /doctorId: cfg\.doctorType \? \(fd\.get\("doctorId"\) \|\| 
 assert.match(source, /computeShare\(v\)\.doc/, 'service diary must display the doctor share');
 assert.match(source, /function allRevenueVisits\(\)/, 'doctor revenue and settlements must have a cross-department visit source');
 assert.match(source, /const visits = allRevenueVisits\(\)\.filter\(v => v\.doctorId === doctorId\)/, 'doctor dashboard revenue must include lab/radiology visits');
-assert.match(source, /const allMonthVisits = allRevenueVisits\(\)\.filter/, 'monthly doctor settlement must include lab/radiology visits');
+assert.match(source, /const allMonthVisits = exactPlan \? exactMonthVisits\(ym\) : allRevenueVisits\(\)\.filter/, 'monthly doctor settlement must include lab/radiology visits');
+assert.match(source, /function exactMonthVisits\(ym\) \{\s*return VISIT_SOURCE_DEFINITIONS\.flatMap/, 'exact monthly settlement visits must cover all five departments');
 assert.match(source, /allRevenueVisits\(\)\.some\(v => v\.doctorId === docId\)/, 'doctor deletion history must include lab/radiology visits');
 
 console.log('PASS doctor-departments-test: lab/radiology doctor types, selectable fee modes, diary assignment, shares, and cross-department settlements.');

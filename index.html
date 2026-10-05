@@ -1988,6 +1988,111 @@ async function cascadeDeleteVisitForIncome(link) {
   // لقطة الصفحة المخزنة لم تعد صالحة: تُقرأ من جديد عند فتح اليومية.
   if (STORAGE_MODE === "firestore") getFirestorePageState(key).pages = {};
 }
+// ======================================================================
+// زيارات "كاملة" للصفحات التي تُحسب منها مبالغ مالية (المستحقات + تسوية الأطباء)
+// كانت هذه الصفحات تُحسب من أحدث 50 زيارة فقط (نافذة الصفحة الأولى)، فتنقص الأرقام.
+// نحمّل هنا الزيارات كاملة في مخزن مستقل EXACT_VISITS لا يمس DB ولا لقطات الصفحات
+// ولا المزامنة ولا المستمعات. وإن تعذّر التحميل نعرض رسالة بدل أرقام ناقصة.
+// ======================================================================
+const EXACT_VISITS = Object.create(null);        // dbKey -> { scope, rows, at }
+const EXACT_VISITS_ERRORS = Object.create(null); // dbKey -> رسالة الخطأ
+const EXACT_VISITS_LOADING = new Map();
+function settlementMonthKey() { return state.payrollMonth || state.settlementMonth || todayISO().slice(0, 7); }
+function exactVisitsPlan(page) {
+  if (STORAGE_MODE !== "firestore") return null;
+  const id = normalizePageId(page);
+  if (id === "payroll") {
+    const ym = String(settlementMonthKey());
+    if (!/^\d{4}-\d{2}$/.test(ym) || !can("doctors", "view")) return null;
+    return { keys: VISIT_SOURCE_DEFINITIONS.map(def => def.dbKey), scope: ym };
+  }
+  const match = /^outstandingBalances(Clinic|Dental|Operations|Labs|Radiology)$/.exec(String(id));
+  if (!match) return null;
+  const source = VISIT_SOURCE_DEFINITIONS.find(def => def.kindKey === match[1].toLowerCase());
+  return source ? { keys: [source.dbKey], scope: "all" } : null;
+}
+function exactEntryFresh(key, scope) {
+  const entry = EXACT_VISITS[key];
+  return !!entry && entry.scope === scope && Date.now() - entry.at < READ_CACHE_TTL_MS;
+}
+function exactVisitsReady(plan) {
+  return plan.keys.every(key => EXACT_VISITS[key] && EXACT_VISITS[key].scope === plan.scope);
+}
+function exactVisitsSettled(plan) {
+  return plan.keys.every(key => EXACT_VISITS_ERRORS[key] || exactEntryFresh(key, plan.scope));
+}
+function exactVisitRows(key, scope) {
+  const entry = EXACT_VISITS[key];
+  return entry && entry.scope === scope ? entry.rows : null;
+}
+function exactMonthVisits(ym) {
+  return VISIT_SOURCE_DEFINITIONS.flatMap(source =>
+    (exactVisitRows(source.dbKey, ym) || []).map(visit => ({ ...visit, kind: source.kind, kindKey: source.kindKey })))
+    .filter(visit => String(visit.date || "").startsWith(ym));
+}
+function clearExactVisits() {
+  for (const key of Object.keys(EXACT_VISITS)) delete EXACT_VISITS[key];
+  for (const key of Object.keys(EXACT_VISITS_ERRORS)) delete EXACT_VISITS_ERRORS[key];
+}
+async function fetchExactVisitRows(key, scope) {
+  if (scope === "all") return (await window.MitaliFirebase.getTable(key)) || [];
+  const [year, month] = scope.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const where = [
+    { field: "date", op: ">=", value: `${scope}-01` },
+    { field: "date", op: "<=", value: `${scope}-${String(lastDay).padStart(2, "0")}` },
+  ];
+  const rows = [];
+  let cursor = null;
+  for (let i = 0; i < 400; i++) {
+    const result = await window.MitaliFirebase.getPage(key, { pageSize: 50, cursor, where });
+    rows.push(...(Array.isArray(result.records) ? result.records : []));
+    if (!result.hasMore || !result.nextCursor) return rows;
+    cursor = result.nextCursor;
+  }
+  throw new Error("exact-visits-too-many-pages");
+}
+async function ensureExactVisits(page) {
+  const plan = exactVisitsPlan(page);
+  if (!plan || !currentUser || !window.MitaliFirebase) return;
+  await Promise.all(plan.keys.filter(key => !exactEntryFresh(key, plan.scope)).map(key => {
+    const id = `${key}|${plan.scope}`;
+    if (!EXACT_VISITS_LOADING.has(id)) {
+      EXACT_VISITS_LOADING.set(id, fetchExactVisitRows(key, plan.scope)
+        .then(rows => { EXACT_VISITS[key] = { scope: plan.scope, rows, at: Date.now() }; delete EXACT_VISITS_ERRORS[key]; })
+        .catch(err => {
+          delete EXACT_VISITS[key];
+          EXACT_VISITS_ERRORS[key] = String((err && (err.code || err.message)) || "error");
+          console.warn("Exact visits load failed:", key, EXACT_VISITS_ERRORS[key]);
+        })
+        .finally(() => EXACT_VISITS_LOADING.delete(id)));
+    }
+    return EXACT_VISITS_LOADING.get(id);
+  }));
+}
+function exactVisitsPlaceholderHTML(plan, title) {
+  const failed = plan.keys.some(key => EXACT_VISITS_ERRORS[key]);
+  return `<div class="card" style="margin-bottom:16px;">
+    <div class="section-title" style="margin:0;">${title}</div>
+    <p class="hint" style="margin-top:8px;">${failed
+      ? "⚠️ تعذّر تحميل الزيارات كاملة، ولن تُعرض أرقام ناقصة بدلها. تأكد من الاتصال ثم أعد المحاولة."
+      : "⏳ جارٍ تحميل الزيارات كاملة لحساب الأرقام بدقة..."}</p>
+    ${failed ? '<button type="button" class="btn sm" data-exact-retry>إعادة المحاولة</button>' : ""}
+  </div>`;
+}
+function bindExactVisitsRetry(root) {
+  root.querySelectorAll("[data-exact-retry]").forEach(button => button.addEventListener("click", () => {
+    for (const key of Object.keys(EXACT_VISITS_ERRORS)) delete EXACT_VISITS_ERRORS[key];
+    route();
+  }));
+}
+function renderExactVisitsGate(c, page, title) {
+  const plan = exactVisitsPlan(page);
+  if (!plan || exactVisitsReady(plan)) return true;
+  c.innerHTML = exactVisitsPlaceholderHTML(plan, title);
+  bindExactVisitsRetry(c);
+  return false;
+}
 function pageKeys(page) { return PAGE_DATA_KEYS[page] || ["doctors", "employees", "settings"]; }
 // مصالحة idempotent: كل زيارة مدفوعة في الأقسام الخمسة تقابل قيدًا واحدًا.
 // لا نستبدل collection كاملة، بل نرفع السجلات التي أُضيفت/عُدّلت فقط.
@@ -2009,8 +2114,11 @@ async function reconcileVisitIncomeLinks() {
 }
 async function ensurePageDataLoaded(page, options = {}) {
   if (STORAGE_MODE !== "firestore" || !currentUser) return;
-  const keys = pageKeys(page);
-  if (!keys.length) return;
+  // الصفحات المالية الدقيقة تحمّل الزيارات كاملة (ensureExactVisits) بدل أول 50 سجلاً.
+  const exactPlan = exactVisitsPlan(page);
+  if (!exactPlan) clearExactVisits();
+  const keys = pageKeys(page).filter(key => !(exactPlan && exactPlan.keys.includes(key)));
+  if (!keys.length && !exactPlan) return;
   const pagedKeys = keys.filter(key => SERVER_PAGED_KEYS.has(key));
   const now = Date.now();
   const nonPagedKeys = keys.filter(key => !SERVER_PAGED_KEYS.has(key));
@@ -2022,7 +2130,13 @@ async function ensurePageDataLoaded(page, options = {}) {
   const fresh = !options.force
     && nonPagedKeys.every(key => PAGE_DATA_LOADED_AT[key] && now - PAGE_DATA_LOADED_AT[key] < READ_CACHE_TTL_MS)
     && pagedReady;
-  if (fresh) return;
+  if (fresh) {
+    if (exactPlan && !exactVisitsSettled(exactPlan)) {
+      await ensureExactVisits(page);
+      if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
+    }
+    return;
+  }
   const queueKey = [...keys].sort().join(",");
   if (!PAGE_DATA_LOADING.has(queueKey)) {
     const task = Promise.all([
@@ -2036,6 +2150,7 @@ async function ensurePageDataLoaded(page, options = {}) {
   try {
     await PAGE_DATA_LOADING.get(queueKey);
     await preloadFinancialSummaries(page);
+    await ensureExactVisits(page);
     // Page reads are now capped at 50 for large tables. Income links are
     // maintained at visit save/edit/delete time; opening Dashboard or Ledger
     // must not trigger a full five-collection reconciliation read.
@@ -4915,7 +5030,8 @@ function outstandingPaginationHTML(pageKey, info) {
   </div>`;
 }
 function outstandingVisits(meta) {
-  return (DB[meta.listKey] || []).map(v => ({ ...v, kind: meta.kind, kindKey: meta.listKey }));
+  const exact = exactVisitRows(meta.listKey, "all");
+  return (exact || DB[meta.listKey] || []).map(v => ({ ...v, kind: meta.kind, kindKey: meta.listKey }));
 }
 function splitOutstandingTarget(value) {
   const raw = String(value || "");
@@ -4947,6 +5063,7 @@ function renderOutstandingBalances(sectionKey) {
   const c = document.getElementById("content");
   const meta = OUTSTANDING_SECTION_META[sectionKey];
   if (!meta || !canOutstandingSection(sectionKey)) { renderAccessDenied(); return; }
+  if (!renderExactVisitsGate(c, state.page, `${meta.icon} ${meta.label}`)) return;
   const debtors = groupPatients(outstandingVisits(meta)).filter(g => g.totalDue > 0.01).sort((a, b) => b.totalDue - a.totalDue);
   const info = outstandingPageInfo(debtors, `outstanding_${meta.listKey}`);
   c.innerHTML = `<div class="outstanding-intro"><div class="section-title">${meta.icon} ${meta.label}</div><div class="hint">صفحة اليومية كاملة العرض للقسم المحدد. تعرض 20 اسمًا فقط في كل صفحة، مع ترقيم مستقل.</div></div><div class="outstanding-cards-grid">${renderOutstandingCard(meta, debtors, info)}</div>`;
@@ -5701,9 +5818,11 @@ console.log("Payroll page ready.");
 // زيارة على حدة (الذى يبقى كما هو لأغراض المتابعة اليومية دون تعديل).
 function doctorSettlementSectionHTML() {
   const canEditLab = can("doctors", "edit");
-  const ym = state.payrollMonth || state.settlementMonth || todayISO().slice(0, 7);
+  const ym = settlementMonthKey();
   state.settlementMonth = ym;
-  const allMonthVisits = allRevenueVisits().filter(v => (v.date || "").startsWith(ym));
+  const exactPlan = exactVisitsPlan("payroll");
+  if (exactPlan && !exactVisitsReady(exactPlan)) return exactVisitsPlaceholderHTML(exactPlan, `🧾 تسوية حساب الأطباء — ${monthLabel(ym)}`);
+  const allMonthVisits = exactPlan ? exactMonthVisits(ym) : allRevenueVisits().filter(v => (v.date || "").startsWith(ym));
   const lumpIncome = DB.income.filter(r => r.doctorId && (r.date || "").startsWith(ym));
 
   // إصلاح محاسبي جوهري: هذه الشاشة كانت مبنية بالكامل على معادلة نسبة مئوية
@@ -5769,6 +5888,7 @@ function doctorSettlementSectionHTML() {
   `;
 }
 function bindDoctorSettlementEvents(c) {
+  bindExactVisitsRetry(c);
   const ym = state.settlementMonth;
   const monthInput = document.getElementById("settlementMonthInput");
   if (monthInput) monthInput.addEventListener("change", () => { state.settlementMonth = monthInput.value; route(); });
@@ -7962,10 +8082,10 @@ const PAGE_REALTIME_KEYS = {
   reports: ["income", "expense", "payroll", ...REVENUE_VISIT_DB_KEYS],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
-  outstandingBalances: ["doctors", ...REVENUE_VISIT_DB_KEYS],
-  outstandingBalancesClinic: ["visitsClinic"], outstandingBalancesDental: ["visitsDental"],
-  outstandingBalancesOperations: ["visitsOperations"], outstandingBalancesLabs: ["visitsLabs"],
-  outstandingBalancesRadiology: ["visitsRadiology"]
+  outstandingBalances: ["doctors"],
+  outstandingBalancesClinic: [], outstandingBalancesDental: [],
+  outstandingBalancesOperations: [], outstandingBalancesLabs: [],
+  outstandingBalancesRadiology: []
 };
 function cleanupRealtimeChannels(reason) {
   firestoreRealtimeUnsubs.forEach((unsubscribe) => {
