@@ -2181,7 +2181,7 @@ async function ensurePageDataLoaded(page, options = {}) {
     if (!DB.doctors || !DB.doctors.length) await loadKeys(["doctors"]);
     const currentPage = getPatientFilePageState(page).currentPage || 1;
     await loadPatientFileIndexPage(page, currentPage, options);
-    if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
+    if (currentUser && !isMidEdit()) route();
     return;
   }
   // الصفحات المالية الدقيقة تحمّل الزيارات كاملة (ensureExactVisits) بدل أول 50 سجلاً.
@@ -4855,6 +4855,12 @@ function renderPatientList(summaries, pgInfo, pageKey) {
   const current = (info && info.current) || 1;
 
   if (!items || !items.length) {
+    if (STORAGE_MODE === "firestore" && !getPatientFilePageState(pKey).pages[current]) {
+      return `<div class="card" style="text-align:center; padding:60px 20px;">
+        <div style="font-size:36px; margin-bottom:10px;">⏳</div>
+        <div class="hint" style="font-size:15px; font-weight:700; color:var(--navy);">جارٍ تحميل ملفات المرضى من السحابة...</div>
+      </div>`;
+    }
     return `<div class="card" style="text-align:center; padding:50px 20px;">
       <div style="font-size:36px; margin-bottom:10px;">🔍</div>
       <div class="hint">لا توجد نتائج مطابقة للبحث</div>

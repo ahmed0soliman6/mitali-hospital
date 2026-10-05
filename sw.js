@@ -1,6 +1,6 @@
 // Bumped with patient index pagination release so clients activate the new
 // index.html/firebase-store.js pair instead of retaining an older shell.
-const CACHE_NAME = 'hospital-v1.3.49-patient-index-pagination';
+const CACHE_NAME = 'hospital-v1.3.50-patient-index-live';
 const urlsToCache = ['./index.html', './manifest.json', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
 
 function isApiRequest(request) {
