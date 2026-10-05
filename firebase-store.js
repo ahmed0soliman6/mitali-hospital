@@ -36,9 +36,7 @@
     categories: "categories",
     specialties: "specialties",
     settings: "settings",
-    systemControl: "system_control",
-    patientFileIndexClinic: "patient_file_index_clinic",
-    patientFileIndexDental: "patient_file_index_dental"
+    systemControl: "system_control"
   };
 
   let app = null;
@@ -439,13 +437,10 @@
     visitsRadiology: { primary: "date" }, income: { primary: "date" },
     expense: { primary: "date" }, payroll: { primary: "month" },
     labExpenses: { primary: "month" }, auditLog: { primary: "timestamp" },
-    patientFileIndexClinic: { primary: "updatedAt" },
-    patientFileIndexDental: { primary: "updatedAt" },
-    patient_file_index_clinic: { primary: "updatedAt" },
-    patient_file_index_dental: { primary: "updatedAt" },
   });
   function pageQuery(key, options = {}) {
-    const config = PAGE_QUERY_CONFIG[key] || (COLLECTIONS[key] && PAGE_QUERY_CONFIG[COLLECTIONS[key]]) || { primary: "updatedAt" };
+    const config = PAGE_QUERY_CONFIG[key];
+    if (!config) throw new Error(`No safe page query configured for: ${key}`);
     const pageSize = Math.min(Math.max(Number(options.pageSize) || 30, 1), 50);
     const orderField = options.orderField || config.primary;
     let query = db.collection(collectionName(key));
@@ -591,70 +586,6 @@
     );
   }
 
-  async function getPatientIndexPage(key, options = {}) {
-    await ready();
-
-    const CONFIG = {
-      patientFileIndexClinic: {
-        collection: "patient_file_index_clinic",
-        primary: "updatedAt"
-      },
-      patientFileIndexDental: {
-        collection: "patient_file_index_dental",
-        primary: "updatedAt"
-      }
-    };
-
-    const config = CONFIG[key];
-    if (!config) throw new Error(`Invalid patient index key: ${key}`);
-
-    const pageSize = 30;
-    let query = db.collection(config.collection);
-
-    query = query
-      .orderBy(config.primary, "desc")
-      .orderBy(window.firebase.firestore.FieldPath.documentId(), "desc")
-      .limit(pageSize);
-
-    const cursor = options.cursor || null;
-
-    if (
-      cursor &&
-      cursor.primaryValue !== undefined &&
-      cursor.documentId
-    ) {
-      query = query.startAfter(
-        cursor.primaryValue,
-        String(cursor.documentId)
-      );
-    }
-
-    const snap = options.source
-      ? await query.get({ source: options.source })
-      : await query.get();
-
-    recordReadMetric(key, snap.docs.length);
-
-    const records = snap.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
-
-    const last = snap.docs[snap.docs.length - 1];
-
-    return {
-      records,
-      pageSize,
-      hasMore: records.length === pageSize,
-      nextCursor: last
-        ? {
-            primaryValue: last.get(config.primary),
-            documentId: last.id
-          }
-        : null
-    };
-  }
-
   window.MitaliFirebase = Object.freeze({
     config: Object.freeze({ projectId: firebaseConfig.projectId }),
     collections: Object.freeze(Object.assign({}, COLLECTIONS)),
@@ -662,7 +593,6 @@
     ready,
     getTable,
     getPage,
-    getPatientIndexPage,
     setTable,
     getValue,
     getReadMetrics,
