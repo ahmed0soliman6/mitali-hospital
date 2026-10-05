@@ -20,7 +20,6 @@ assert.match(index, /patientFilesDental:\s*\["doctors",\s*"patientFileIndexDenta
 // 2. Unit testing patient summary functions, pagination, and on-demand visit loading
 const fns = [
   'const PATIENT_VISITS_LOADED_KEYS = new Set();',
-  grab(/function patientFilesPaginationHTML\(pageKey, pageInfo\) \{[\s\S]*?\n\}\n/, 'patientFilesPaginationHTML'),
   grab(/function patientKey\(v\) \{[\s\S]*?\n\}\n/, 'patientKey'),
   grab(/function groupPatients\(visits\) \{[\s\S]*?\n\}\n/, 'groupPatients'),
   grab(/async function syncPatientSummaryForVisit\(visit, kindKey\) \{[\s\S]*?\n\}\n/, 'syncPatientSummaryForVisit'),
@@ -114,12 +113,12 @@ function makeSandbox(extra = {}) {
   assert.strictEqual(summaries.length, 65);
 
   const page1Items = summaries.slice(0, 30);
-  const pgInfoPage1 = { current: 1, totalPages: 3, total: 65, start: 1, end: 30, hasMore: true };
+  const pgInfoPage1 = { current: 1, totalPages: 3, total: 65, start: 1, end: 30 };
   const htmlPage1 = apiB.renderPatientList(page1Items, pgInfoPage1, 'patientFilesDental');
   assert.ok(htmlPage1.includes('مريض 1'), 'Page 1 renders first patient');
   assert.ok(htmlPage1.includes('مريض 30'), 'Page 1 renders 30th patient');
   assert.ok(!htmlPage1.includes('مريض 31'), 'Page 1 does NOT render 31st patient');
-  assert.ok(htmlPage1.includes('data-patient-page-nav="patientFilesDental"'), 'Pagination controls present');
+  assert.ok(htmlPage1.includes('<nav-bar-page-1>'), 'Pagination controls present');
 
   // Test C: On-demand full patient visit history load upon opening a patient file
   let { api: apiC, calls: callsC, DB: DBc } = makeSandbox();

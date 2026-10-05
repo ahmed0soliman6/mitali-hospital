@@ -36,7 +36,9 @@
     categories: "categories",
     specialties: "specialties",
     settings: "settings",
-    systemControl: "system_control"
+    systemControl: "system_control",
+    patientFileIndexClinic: "patient_file_index_clinic",
+    patientFileIndexDental: "patient_file_index_dental"
   };
 
   let app = null;
@@ -437,6 +439,8 @@
     visitsRadiology: { primary: "date" }, income: { primary: "date" },
     expense: { primary: "date" }, payroll: { primary: "month" },
     labExpenses: { primary: "month" }, auditLog: { primary: "timestamp" },
+    patientFileIndexClinic: { primary: "updatedAt" },
+    patientFileIndexDental: { primary: "updatedAt" },
   });
   function pageQuery(key, options = {}) {
     const config = PAGE_QUERY_CONFIG[key];

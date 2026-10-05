@@ -62,6 +62,12 @@ service cloud.firestore {
     match /visits_dental/{document} {
       allow read, write: if activeUser();
     }
+    match /patient_file_index_clinic/{document} {
+      allow read, write: if activeUser();
+    }
+    match /patient_file_index_dental/{document} {
+      allow read, write: if activeUser();
+    }
     match /visits_operations/{document} {
       allow read, write: if activeUser();
     }
