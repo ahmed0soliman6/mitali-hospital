@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="نظام إدارة متكامل لمستشفى لجنة زكاة ميت على التخصصي يشمل العيادات، حسابات المرضى، الصيدلية، الأطباء والموظفين">
+<meta property="og:title" content="نظام إدارة مستشفى لجنة زكاة ميت على التخصصي">
+<meta property="og:description" content="نظام إدارة متكامل لمستشفى لجنة زكاة ميت على التخصصي يشمل العيادات، حسابات المرضى، الصيدلية، الأطباء والموظفين">
 
   <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#173B4A">
@@ -17,7 +20,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script>window.MITALI_API_BASE = window.location.protocol === "file:" ? "https://mitali1.vercel.app" : "";</script>
-<script src="./firebase-store.js"></script>
+<script src="./firebase-store.js?v=1.3.49"></script>
 <style>
   :root{
     --navy:#173B4A;
@@ -444,7 +447,7 @@ const DB = {
   doctors: [], employees: [], visitsClinic: [], visitsDental: [], visitsOperations: [], visitsLabs: [], visitsRadiology: [],
   income: [], expense: [], payroll: [], settings: { openingBalance: 0 },
   staffAccounts: [], categories: null, specialties: null, auditLog: [],
-  labExpenses: [],
+  labExpenses: [], patientFileIndexClinic: [], patientFileIndexDental: [],
 };
 
 const DEFAULT_XRAY_TYPES = ["أشعة عادية", "أشعة بالصبغة", "أشعة مقطعية (CT)", "رنين مغناطيسى (MRI)", "سونار", "أشعة دوبلر", "أشعة بانوراما الأسنان"];
@@ -1647,7 +1650,7 @@ const PAGE_DATA_KEYS = {
   reports: ["doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense", "payroll"],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
-  patientFilesClinic: ["doctors", "visitsClinic"], patientFilesDental: ["doctors", "visitsDental"],
+  patientFilesClinic: ["doctors", "patientFileIndexClinic"], patientFilesDental: ["doctors", "patientFileIndexDental"],
   outstandingBalances: ["doctors", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology"],
   outstandingBalancesClinic: ["doctors", "visitsClinic"], outstandingBalancesDental: ["doctors", "visitsDental"],
   outstandingBalancesOperations: ["doctors", "visitsOperations"], outstandingBalancesLabs: ["doctors", "visitsLabs"],
@@ -1812,18 +1815,78 @@ async function preloadFinancialSummaries(page) {
 }
 const SERVER_PAGED_KEYS = new Set([
   "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology",
-  "payroll", "labExpenses", "auditLog",
+  "payroll", "labExpenses", "auditLog", "patientFileIndexClinic", "patientFileIndexDental",
 ]);
 const PAGE_PRIMARY_KEY = Object.freeze({
   clinic: "visitsClinic", dental: "visitsDental", operations: "visitsOperations",
   labs: "visitsLabs", radiology: "visitsRadiology", income: "income", expense: "expense",
   payroll: "payroll", auditlog: "auditLog",
+  patientFilesClinic: "patientFileIndexClinic",
+  patientFilesDental: "patientFileIndexDental",
 });
 function getFirestorePageState(key) {
   if (!FIRESTORE_PAGE_STATE[key]) {
     FIRESTORE_PAGE_STATE[key] = { currentPage: 1, cursors: { 1: null }, pages: {}, hasMore: {} };
   }
   return FIRESTORE_PAGE_STATE[key];
+}
+
+const PATIENT_FILES_PAGE_SIZE = 30;
+
+const PATIENT_FILE_PAGE_STATE = Object.create(null);
+
+function getPatientFilePageState(pageKey) {
+  if (!PATIENT_FILE_PAGE_STATE[pageKey]) {
+    PATIENT_FILE_PAGE_STATE[pageKey] = {
+      currentPage: 1,
+      cursors: { 1: null },
+      pages: {},
+      hasMore: {}
+    };
+  }
+
+  return PATIENT_FILE_PAGE_STATE[pageKey];
+}
+
+async function loadPatientFileIndexPage(pageKey, page, options = {}) {
+  if (
+    STORAGE_MODE !== "firestore" ||
+    !currentUser ||
+    !window.MitaliFirebase?.getPatientIndexPage
+  ) {
+    return false;
+  }
+
+  const dbKey =
+    pageKey === "patientFilesClinic"
+      ? "patientFileIndexClinic"
+      : "patientFileIndexDental";
+
+  const pageState = getPatientFilePageState(pageKey);
+  const targetPage = Number(page) || pageState.currentPage || 1;
+
+  if (!options.force && pageState.pages[targetPage]) {
+    pageState.currentPage = targetPage;
+    return true;
+  }
+
+  const result = await window.MitaliFirebase.getPatientIndexPage(
+    dbKey,
+    {
+      cursor: pageState.cursors[targetPage] || null
+    }
+  );
+
+  pageState.pages[targetPage] = Array.isArray(result.records)
+    ? result.records.slice()
+    : [];
+
+  pageState.hasMore[targetPage] = !!result.hasMore;
+
+  pageState.cursors[targetPage + 1] = result.nextCursor || null;
+  pageState.currentPage = targetPage;
+
+  return true;
 }
 // نطاق تاريخ يومية الزيارات حسب فلتر "عرض حسب" (يوم/شهر/سنة/الكل) لنفس اليومية.
 // يُستخدم لتمرير الفلتر إلى استعلام Firestore بدل قراءة "آخر 50 زيارة" مهما كان التاريخ.
@@ -2114,6 +2177,13 @@ async function reconcileVisitIncomeLinks() {
 }
 async function ensurePageDataLoaded(page, options = {}) {
   if (STORAGE_MODE !== "firestore" || !currentUser) return;
+  if (page === "patientFilesClinic" || page === "patientFilesDental") {
+    if (!DB.doctors || !DB.doctors.length) await loadKeys(["doctors"]);
+    const currentPage = getPatientFilePageState(page).currentPage || 1;
+    await loadPatientFileIndexPage(page, currentPage, options);
+    if (currentUser && !isMidEdit() && !isUserActivelyTyping()) route();
+    return;
+  }
   // الصفحات المالية الدقيقة تحمّل الزيارات كاملة (ensureExactVisits) بدل أول 50 سجلاً.
   const exactPlan = exactVisitsPlan(page);
   if (!exactPlan) clearExactVisits();
@@ -2166,7 +2236,7 @@ function schedulePageDataLoad(page) {
 // التعارضات (مرحلة ج). الوسم يتم فقط على السجلات التى تغيّرت فعليًا منذ آخر
 // نقطة مزامنة معروفة (خط الأساس)، عبر مقارنة تلقائية، دون الحاجة لتعديل كل
 // نقطة إضافة/تعديل فى الكود يدويًا.
-const RECORD_TABLE_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","staffAccounts","labExpenses"];
+const RECORD_TABLE_KEYS = ["doctors","employees","visitsClinic","visitsDental","visitsOperations","visitsLabs","visitsRadiology","income","expense","payroll","staffAccounts","labExpenses","patientFileIndexClinic","patientFileIndexDental"];
 async function stampChangedRecords(key, newArr) {
   if (!RECORD_TABLE_KEYS.includes(key) || !Array.isArray(newArr)) return;
   const baseline = await readSyncBaseline(key);
@@ -2267,6 +2337,8 @@ async function persist(key) {
     payroll: DB.payroll, settings: DB.settings, staffAccounts: DB.staffAccounts,
     categories: DB.categories, specialties: DB.specialties, auditLog: DB.auditLog,
     labExpenses: DB.labExpenses,
+    patientFileIndexClinic: DB.patientFileIndexClinic,
+    patientFileIndexDental: DB.patientFileIndexDental,
   };
   try {
     // ننتظر اكتمال الحفظ فعليًا (بدل إطلاقه فى الخلفية دون انتظار) حتى تعكس نتيجته
@@ -2624,6 +2696,116 @@ function groupPatients(visits) {
     const upcoming = g.visits.filter(v => v.nextVisitDate && v.nextVisitDate >= today).sort((a, b) => (a.nextVisitDate || "").localeCompare(b.nextVisitDate || ""));
     return { ...g, fileNos: Array.from(g.fileNos), visits: sorted, totalPaid, totalDue, lastVisit: sorted[0] || null, nextFollowUp: upcoming[0] || null };
   });
+}
+
+async function syncPatientSummaryForVisit(visit, kindKey) {
+  if (!visit) return;
+  const pKey = patientKey(visit);
+  const sourceDbKey = kindKey === "dental" ? "visitsDental" : "visitsClinic";
+  const indexDbKey = kindKey === "dental" ? "patientFileIndexDental" : "patientFileIndexClinic";
+
+  const visits = (Array.isArray(DB[sourceDbKey]) ? DB[sourceDbKey] : []).filter(v => v && patientKey(v) === pKey);
+  if (!Array.isArray(DB[indexDbKey])) DB[indexDbKey] = [];
+
+  if (visits.length > 0) {
+    const sorted = sortByEntryOrderDesc(visits);
+    const totalPaid = visits.reduce((s, v) => s + (Number(v.paid) || 0), 0);
+    const totalDue = visits.reduce((s, v) => s + visitRemaining(v), 0);
+    const last = sorted[0];
+    const fileNos = [...new Set(visits.map(v => v.fileNo).filter(Boolean))].join(", ");
+    const summary = {
+      id: pKey,
+      patientKey: pKey,
+      fileNo: fileNos || (last ? last.fileNo : "") || (visit.fileNo || ""),
+      name: (last ? last.patient : "") || visit.patient || "",
+      phone: (last ? last.phone : "") || visit.phone || "",
+      visitsCount: visits.length,
+      lastVisitDate: last ? last.date : (visit.date || ""),
+      lastVisitCreatedAt: last ? last.createdAt : (visit.createdAt || ""),
+      totalPaid,
+      totalDue,
+      updatedAt: nowISO(),
+    };
+    const idx = DB[indexDbKey].findIndex(s => s && (s.patientKey === pKey || s.id === pKey));
+    if (idx >= 0) DB[indexDbKey][idx] = summary;
+    else DB[indexDbKey].unshift(summary);
+    await storeSetInner(indexDbKey, DB[indexDbKey]);
+    await persist(indexDbKey);
+  } else {
+    const idx = DB[indexDbKey].findIndex(s => s && (s.patientKey === pKey || s.id === pKey));
+    if (idx >= 0) DB[indexDbKey].splice(idx, 1);
+    await markSyncTombstone(indexDbKey, pKey);
+    await storeSetInner(indexDbKey, DB[indexDbKey]);
+    await persist(indexDbKey);
+  }
+}
+
+const PATIENT_VISITS_LOADED_KEYS = new Set();
+async function ensurePatientVisitsLoaded(kindKey, pKey) {
+  if (!pKey) return;
+  const sourceDbKey = kindKey === "dental" ? "visitsDental" : "visitsClinic";
+  const loadId = `${sourceDbKey}:${pKey}`;
+  if (PATIENT_VISITS_LOADED_KEYS.has(loadId)) return;
+  PATIENT_VISITS_LOADED_KEYS.add(loadId);
+  if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase?.getPage) return;
+
+  let where = [];
+  if (pKey.startsWith("F:")) {
+    where = [{ field: "fileNo", op: "==", value: pKey.slice(2) }];
+  } else if (pKey.startsWith("N:")) {
+    const parts = pKey.slice(2).split("|");
+    const name = parts[0] || "";
+    const phone = parts[1] || "";
+    if (phone) where = [{ field: "phone", op: "==", value: phone }];
+    else if (name) where = [{ field: "patient", op: "==", value: name }];
+  }
+  if (!where.length) return;
+
+  try {
+    let page = 1;
+    let hasMore = true;
+    while (hasMore) {
+      const result = await window.MitaliFirebase.getPage(sourceDbKey, { pageSize: 100, page, where });
+      if (Array.isArray(result.records) && result.records.length) {
+        if (!Array.isArray(DB[sourceDbKey])) DB[sourceDbKey] = [];
+        const map = new Map(DB[sourceDbKey].map(v => [String(v.id), v]));
+        result.records.forEach(v => map.set(String(v.id), v));
+        DB[sourceDbKey] = Array.from(map.values());
+      }
+      hasMore = !!result.hasMore;
+      page++;
+      if (page > 20) break;
+    }
+    PATIENT_VISITS_LOADED_KEYS.add(loadId);
+  } catch (err) {
+    console.warn("ensurePatientVisitsLoaded error:", err);
+  }
+}
+
+function getPatientSummaries(kindKey) {
+  const ns = kindKey === "dental" ? "Dental" : "Clinic";
+  const indexDbKey = "patientFileIndex" + ns;
+  const sourceDbKey = kindKey === "dental" ? "visitsDental" : "visitsClinic";
+
+  let list = Array.isArray(DB[indexDbKey]) ? DB[indexDbKey] : [];
+  if (!list.length && Array.isArray(DB[sourceDbKey]) && DB[sourceDbKey].length) {
+    const groups = groupPatients(DB[sourceDbKey]);
+    list = groups.map(g => ({
+      id: g.key,
+      patientKey: g.key,
+      fileNo: (g.fileNos && g.fileNos.join(", ")) || g.lastVisit?.fileNo || "",
+      name: g.name || "",
+      phone: g.phone || "",
+      visitsCount: g.visits.length,
+      lastVisitDate: g.lastVisit?.date || "",
+      lastVisitCreatedAt: g.lastVisit?.createdAt || "",
+      totalPaid: g.totalPaid || 0,
+      totalDue: g.totalDue || 0,
+      updatedAt: nowISO(),
+    }));
+    DB[indexDbKey] = list;
+  }
+  return list;
 }
 
 function ledgerRows() {
@@ -3369,10 +3551,11 @@ function renderTopbar() {
 
 function showToast(msg, duration) {
   const t = document.getElementById("toast");
+  if (!t) return;
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(showToast._h);
-  showToast._h = setTimeout(() => t.classList.remove("show"), duration || 2200);
+  showToast._h = setTimeout(() => t && t.classList.remove("show"), duration || 2200);
 }
 
 // نافذة "تغيير كلمة المرور الخاصة بي" - متاحة لأي مستخدم مسجّل دخول لحسابه هو
@@ -3725,6 +3908,7 @@ function waIconButtonHTML(phone, dataAttr, key) {
 const PAGE_SIZE = 30;
 function pageKeyDatabaseKey(pageKey) {
   if (PAGE_PRIMARY_KEY[pageKey]) return PAGE_PRIMARY_KEY[pageKey];
+  if (SERVER_PAGED_KEYS.has(pageKey)) return pageKey;
   if (pageKey === "ledger" || pageKey === "money_income" || pageKey === "money_expense") return null;
   if (pageKey === "payroll") return "payroll";
   if (pageKey === "auditLog") return "auditLog";
@@ -4176,11 +4360,6 @@ function renderVisitsPage(kind) {
       submitBtn.style.pointerEvents = "none";
       submitBtn.style.opacity = "0.65";
     }
-    // إصلاح جوهري: لو حصل أي خطأ غير متوقع أثناء الحفظ (مثلاً بيانات ناقصة أو
-    // خطأ برمجي فى خطوة فرعية)، كان النموذج يفضل "مقفولًا" للأبد بصمت بسبب القفل
-    // أعلاه بدون أي رسالة توضّح السبب - يبدو للمستخدم وكأن "النظام لا يسجل" رغم
-    // إنه فعليًا توقّف بسبب استثناء. الآن أي خطأ يُظهر تنبيهًا واضحًا ويُعيد فتح
-    // النموذج فورًا للمحاولة تانى، بدل التجمّد الصامت.
     try {
       await runVisitSave();
     } catch (err) {
@@ -4197,85 +4376,60 @@ function renderVisitsPage(kind) {
       ACTIVE_UI_SAVES.delete(saveKey);
     }
     async function runVisitSave() {
-    const fd = new FormData(e.target);
-    const total = Number(fd.get("total")) || 0;
-    const rec = {
-      id: editing ? editing.id : uid(),
-      date: fd.get("date"), fileNo: fd.get("fileNo"), patient: fd.get("patient"), phone: fd.get("phone"),
-      doctorId: fd.get("doctorId"), examType: fd.get("examType"), xray: 0, lab: 0, services: 0,
-      total, paid: Number(fd.get("paid")) || 0, paymentMethod: "نقدي", // الدفع فى العيادات نقدي فقط - لا حاجة لخانة اختيار
-      status: fd.get("status"), notes: fd.get("notes"), nextVisitDate: fd.get("nextVisitDate") || null,
-      linkedIncomeId: editing ? (editing.linkedIncomeId || null) : null,
-      // إصلاح ترتيب: وقت التسجيل الفعلى (وليس تاريخ الزيارة نفسها) - يُحفَظ مرة
-      // واحدة فقط عند الإنشاء الأول ولا يتغيّر أبدًا عند أي تعديل لاحق، ليكون
-      // معيارًا ثابتًا وصحيحًا لترتيب "الأحدث إدخالًا" بغض النظر عن تاريخ الزيارة
-      // نفسها أو رقم الملف أو أي قيمة أخرى قابلة للتغيير.
-      createdAt: editing ? (editing.createdAt || null) : nowISO(),
-    };
-    // إصلاح محاسبي: نأخذ "لقطة" من نصيب المجمع الثابت الحالى (لطبيب نظامه "مبلغ
-    // ثابت لكل زيارة") ونحفظها على الزيارة نفسها وقت التسجيل، بدل قراءتها حيّة من
-    // إعدادات الطبيب كل مرة - حتى لو غُيِّر سعر الطبيب مستقبلًا، تبقى هذه الزيارة
-    // محسوبة بالسعر الذى كان ساريًا فعلًا وقت تسجيلها. نُعيد اللقطة فقط لو كانت
-    // زيارة جديدة، أو تغيّر الطبيب/نوع الكشف عن التعديل السابق؛ غير ذلك نحتفظ
-    // باللقطة القديمة كما هى عند مجرد تعديل تفاصيل أخرى (اسم، ملاحظات...).
-    if (!isDental) {
-      const doc = dInfo(rec.doctorId);
-      const mode = doc && doc.type !== "أسنان" ? (doc.feeMode || "fixed_visit") : null;
-      const changedDoctorOrType = !editing || editing.doctorId !== rec.doctorId || editing.examType !== rec.examType;
-      if (mode === "fixed_visit") {
-        rec.clinicFeeSnapshot = (changedDoctorOrType || editing?.clinicFeeSnapshot == null)
-          ? (rec.examType === "متابعة" ? Number(doc.followupClinicFee) || 0 : Number(doc.checkupClinicFee) || 0)
-          : editing.clinicFeeSnapshot;
-      } else {
-        rec.clinicFeeSnapshot = null;
+      const fd = new FormData(e.target);
+      const total = Number(fd.get("total")) || 0;
+      const rec = {
+        id: editing ? editing.id : uid(),
+        date: fd.get("date"), fileNo: fd.get("fileNo"), patient: fd.get("patient"), phone: fd.get("phone"),
+        doctorId: fd.get("doctorId"), examType: fd.get("examType"), xray: 0, lab: 0, services: 0,
+        total, paid: Number(fd.get("paid")) || 0, paymentMethod: "نقدي",
+        status: fd.get("status"), notes: fd.get("notes"), nextVisitDate: fd.get("nextVisitDate") || null,
+        linkedIncomeId: editing ? (editing.linkedIncomeId || null) : null,
+        createdAt: editing ? (editing.createdAt || null) : nowISO(),
+      };
+      if (!isDental) {
+        const doc = dInfo(rec.doctorId);
+        const mode = doc && doc.type !== "أسنان" ? (doc.feeMode || "fixed_visit") : null;
+        const changedDoctorOrType = !editing || editing.doctorId !== rec.doctorId || editing.examType !== rec.examType;
+        if (mode === "fixed_visit") {
+          rec.clinicFeeSnapshot = (changedDoctorOrType || editing?.clinicFeeSnapshot == null)
+            ? (rec.examType === "متابعة" ? Number(doc.followupClinicFee) || 0 : Number(doc.checkupClinicFee) || 0)
+            : editing.clinicFeeSnapshot;
+        } else {
+          rec.clinicFeeSnapshot = null;
+        }
       }
-    }
-    if (editing) {
-      const idx = list.findIndex(v => v.id === editing.id);
-      list[idx] = rec;
-      logActivity(isDental ? "تعديل حالة أسنان" : "تعديل زيارة", kind, editing, rec);
-    } else {
-      list.push(rec);
-      logActivity(isDental ? "إضافة حالة أسنان" : "إضافة زيارة", kind, null, rec);
-    }
-    // حدّث سجل الدخل المرتبط أولًا، لكن لا تطلق كتابة مستقلة في الخلفية؛
-    // سننتظر حفظ الدخل والزيارة بترتيب واضح حتى لا تعيد realtime أو طابور
-    // الكتابة نسخة قديمة فوق الزيارة الجديدة.
-    await syncVisitIncomeLink(rec, kind, true);
-    // نعرض السجل المحلي فورًا أثناء رفعه إلى Firestore، ثم نؤكد النتيجة
-    // برسالة نهائية بعد اكتمال persist() الفعلي.
-    state.editId = null;
-    if (!editing) state.tablePage[`visits_${kind}`] = 1;
-    route();
-    showToast(`💾 ${editing ? "تم تحديث السجل محليًا" : "تمت إضافة المعاملة محليًا"} — جارٍ المزامنة...`, 2400);
-    // إصلاح جوهري: ننتظر persist() فعليًا هنا (بدل إطلاقها بدون انتظار كما كان
-
-    // سابقًا) قبل استدعاء route(). هذا يضمن أن أى تحديث خلفى آخر (مثلًا
-    // backgroundRefreshCurrentPage أو سحب فورى بعد التنقل) لا يمكن أبدًا أن يبدأ ويقرأ
-    // نسخة سحابية لم تصل إليها هذه الزيارة بعد - وهو السبب الجذرى وراء اختفاء
-    // الزيارة الجديدة مؤقتًا. PENDING_WRITES (المُحدَّث داخل persist نفسها) يبقى
-    // > 0 طوال مدة هذا الانتظار، وهو ما يحمى منه backgroundRefreshCurrentPage أعلاه أيضًا.
-    let pushFailedOnline = false;
-    try {
-      const incomeChanged = Number(rec.paid) > 0 || !!(editing && editing.linkedIncomeId);
-      const writes = [persist(isDental ? "visitsDental" : "visitsClinic")];
-      if (incomeChanged) writes.push(persist("income"));
-      await Promise.all(writes);
-    } catch (err) {
-      // فشل الرفع الفورى للسحابة رغم وجود اتصال (خطأ شبكة عابر، رفض من الخادم...).
-      // البيانات محفوظة محليًا بالفعل وأُضيفت لطابور إعادة المحاولة التلقائية
-      // (داخل storeSetInner)، فهذا ليس فشلًا حقيقيًا للعملية من منظور المستخدم -
-      // لا نُظهر رسالة خطأ عامة ولا نمنعه من المتابعة، فقط نوضّح أن الحفظ محلى الآن.
-      console.error("Visit sync push failed (saved locally, will retry):", err);
-      pushFailedOnline = true;
-    }
-    if (pushFailedOnline) {
-      showToast(`💾 ${editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة"} محليًا — تعذّر رفعه للسحابة الآن وسيُعاد رفعه تلقائيًا عند توفر الاتصال`, 3800);
-    } else {
-      saveToast(editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة بنجاح");
-    }
-    ACTIVE_UI_SAVES.delete(saveKey);
-    route();
+      if (editing) {
+        const idx = list.findIndex(v => v.id === editing.id);
+        list[idx] = rec;
+        logActivity(isDental ? "تعديل حالة أسنان" : "تعديل زيارة", kind, editing, rec);
+      } else {
+        list.push(rec);
+        logActivity(isDental ? "إضافة حالة أسنان" : "إضافة زيارة", kind, null, rec);
+      }
+      await syncVisitIncomeLink(rec, kind, true);
+      await syncPatientSummaryForVisit(rec, isDental ? "dental" : "clinic");
+      state.editId = null;
+      if (!editing) state.tablePage[`visits_${kind}`] = 1;
+      route();
+      showToast(`💾 ${editing ? "تم تحديث السجل محليًا" : "تمت إضافة المعاملة محليًا"} — جارٍ المزامنة...`, 2400);
+      let pushFailedOnline = false;
+      try {
+        const incomeChanged = Number(rec.paid) > 0 || !!(editing && editing.linkedIncomeId);
+        const writes = [persist(isDental ? "visitsDental" : "visitsClinic")];
+        if (incomeChanged) writes.push(persist("income"));
+        await Promise.all(writes);
+      } catch (err) {
+        console.error("Visit sync push failed (saved locally, will retry):", err);
+        pushFailedOnline = true;
+      }
+      if (pushFailedOnline) {
+        showToast(`💾 ${editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة"} محليًا — تعذّر رفعه للسحابة الآن وسيُعاد رفعه تلقائيًا عند توفر الاتصال`, 3800);
+      } else {
+        saveToast(editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة بنجاح");
+      }
+      ACTIVE_UI_SAVES.delete(saveKey);
+      route();
     }
   });
 
@@ -4346,6 +4500,7 @@ function renderVisitsPage(kind) {
       await markSyncTombstone(isDental ? "visitsDental" : "visitsClinic", b.dataset.del);
       if (idx > -1) list.splice(idx, 1);
       logActivity(isDental ? "حذف حالة أسنان" : "حذف زيارة", kind, removed, null);
+      await syncPatientSummaryForVisit(removed || target, isDental ? "dental" : "clinic");
       await persist(isDental ? "visitsDental" : "visitsClinic");
       showToast("تم الحذف");
     } catch (err) {
@@ -4633,30 +4788,99 @@ console.log("Visits page ready.");
 // ======================================================================
 // صفحة ملفات المرضى (بطاقة موحّدة لكل مريض عبر العيادات والأسنان)
 // ======================================================================
-function renderPatientList(list) {
-  if (!list.length) {
+function patientFilesPaginationHTML(pageKey, pageInfo) {
+  if (!pageInfo.hasMore && pageInfo.current === 1) return "";
+
+  const itemsLength = pageInfo.pageItems ? pageInfo.pageItems.length : (pageInfo.total || 0);
+  return `
+    <div class="pagination-bar"
+      style="
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        flex-wrap:wrap;
+        gap:10px;
+        padding:12px 4px 4px;
+      ">
+
+      <span class="hint">
+        يعرض ${(pageInfo.current - 1) * 30 + 1}
+        -
+        ${(pageInfo.current - 1) * 30 + itemsLength}
+      </span>
+
+      <div style="display:flex;gap:6px;align-items:center;">
+
+        <button
+          type="button"
+          class="btn ghost sm"
+          data-patient-page-nav="${pageKey}"
+          data-page-to="${pageInfo.current - 1}"
+          ${pageInfo.current === 1 ? "disabled" : ""}
+        >
+          السابق
+        </button>
+
+        <span
+          style="
+            font-size:12.5px;
+            font-weight:700;
+            padding:0 8px;
+          "
+        >
+          صفحة ${pageInfo.current}
+        </span>
+
+        <button
+          type="button"
+          class="btn ghost sm"
+          data-patient-page-nav="${pageKey}"
+          data-page-to="${pageInfo.current + 1}"
+          ${pageInfo.hasMore ? "" : "disabled"}
+        >
+          التالي
+        </button>
+
+      </div>
+    </div>
+  `;
+}
+
+function renderPatientList(summaries, pgInfo, pageKey) {
+  const info = (pgInfo && typeof pgInfo === "object" && (pgInfo.pageItems || pgInfo.current !== undefined))
+    ? pgInfo
+    : ((pageKey && typeof pageKey === "object") ? pageKey : {});
+  const pKey = typeof pageKey === "string" ? pageKey : (typeof pgInfo === "string" ? pgInfo : "patientFilesClinic");
+  const items = (info && Array.isArray(info.pageItems)) ? info.pageItems : (Array.isArray(summaries) ? summaries : []);
+  const current = (info && info.current) || 1;
+
+  if (!items || !items.length) {
     return `<div class="card" style="text-align:center; padding:50px 20px;">
       <div style="font-size:36px; margin-bottom:10px;">🔍</div>
       <div class="hint">لا توجد نتائج مطابقة للبحث</div>
     </div>`;
   }
+  const start = (current - 1) * 30 + 1;
+  const end = (current - 1) * 30 + items.length;
+
   return `
     <div class="card">
-      <div class="section-title">قائمة المرضى <span class="hint">${list.length} مريض</span></div>
+      <div class="section-title">قائمة المرضى <span class="hint">يعرض ${start}-${end}</span></div>
       <div class="table-wrap"><table>
         <thead><tr><th>الاسم</th><th>الهاتف</th><th>عدد الزيارات</th><th>آخر زيارة</th><th>إجمالي المتبقي</th><th></th></tr></thead>
         <tbody>
-          ${list.map(g => `
+          ${items.map(g => `
             <tr>
               <td style="font-weight:700;">${esc(g.name || "-")}</td>
-              <td>${esc(g.phone || "-")} ${waIconButtonHTML(g.phone, "wa-patient", g.key)}</td>
-              <td>${fmtInt(g.visits.length)}</td>
-              <td>${g.lastVisit?.date || "-"}${entryTimeDisplay(g.lastVisit?.createdAt) ? `<div class="hint" style="font-size:11px;">${entryTimeDisplay(g.lastVisit.createdAt)}</div>` : ""}</td>
-              <td style="color:${g.totalDue > 0 ? "var(--expense)" : "var(--ink)"}; font-weight:${g.totalDue > 0 ? 700 : 400};">${fmt(g.totalDue)}</td>
-              <td><button class="btn sm" data-openpatient="${esc(g.key)}">عرض الملف</button></td>
+              <td>${esc(g.phone || "-")} ${waIconButtonHTML(g.phone, "wa-patient", g.patientKey || g.key || g.id)}</td>
+              <td>${fmtInt(g.visitsCount || (g.visits ? g.visits.length : 0))}</td>
+              <td>${g.lastVisitDate || g.lastVisit?.date || "-"}${entryTimeDisplay(g.lastVisitCreatedAt || g.lastVisit?.createdAt) ? `<div class="hint" style="font-size:11px;">${entryTimeDisplay(g.lastVisitCreatedAt || g.lastVisit?.createdAt)}</div>` : ""}</td>
+              <td style="color:${(g.totalDue || 0) > 0 ? "var(--expense)" : "var(--ink)"}; font-weight:${(g.totalDue || 0) > 0 ? 700 : 400};">${fmt(g.totalDue || 0)}</td>
+              <td><button class="btn sm" data-openpatient="${esc(g.patientKey || g.key || g.id)}">عرض الملف</button></td>
             </tr>`).join("")}
         </tbody>
       </table></div>
+      ${patientFilesPaginationHTML(pKey, Object.assign({ current, pageItems: items, hasMore: !!info.hasMore }, info))}
     </div>`;
 }
 function renderPatientCard(g) {
@@ -4711,14 +4935,18 @@ function renderPatientCard(g) {
 }
 function renderPatientFilesPage(kind) {
   const c = document.getElementById("content");
-  // كل صفحة (عيادات / أسنان) بقت مستقلة تمامًا: بياناتها، بحثها، فلاترها،
-  // والمريض المفتوح فيها - كل ده بحالة خاصة بيها (مفاتيح state مميّزة بلاحقة
-  // القسم) عشان التنقل بين الصفحتين ما يخلطش بحث/فلتر/مريض مفتوح فى واحدة
-  // مع التانية.
   const ns = kind === "أسنان" ? "Dental" : "Clinic";
+  const kindKey = kind === "أسنان" ? "dental" : "clinic";
   const K = (base) => base + ns;
+  const pageKey = "patientFiles" + ns;
+
+  const pageState = getPatientFilePageState(pageKey);
+  const curPage = pageState.currentPage || 1;
+  const isFirestore = STORAGE_MODE === "firestore" && !!window.MitaliFirebase?.getPatientIndexPage;
+
+  const summaries = isFirestore ? (pageState.pages[curPage] || []) : getPatientSummaries(kindKey);
   const allVisits = allPatientVisits().filter(v => v.kind === kind);
-  const allGroups = groupPatients(allVisits); // بدون فلاتر - تُستخدم للمتابعات القادمة وفتح ملف مريض بعينه
+  const allGroups = groupPatients(allVisits);
 
   const granKey = "patientFilterGran" + ns, valKey = "patientFilterVal" + ns;
   ensurePeriodFilter(granKey, valKey);
@@ -4726,34 +4954,50 @@ function renderPatientFilesPage(kind) {
   if (!state[K("patientStatusFilter")]) state[K("patientStatusFilter")] = "all";
   const statusFilter = state[K("patientStatusFilter")];
 
-  const filteredVisits = allVisits.filter(v =>
-    periodMatches(v.date, granularity, filterValue) &&
-    (statusFilter === "all" || v.status === statusFilter)
-  );
-  const groups = groupPatients(filteredVisits);
-
   const search = state[K("patientSearch")] || "";
   const q = search.trim().toLowerCase();
-  const filtered = q ? groups.filter(g =>
-    (g.name || "").toLowerCase().includes(q) ||
-    (g.phone || "").toLowerCase().includes(q) ||
-    g.fileNos.some(f => f.toLowerCase().includes(q))
-  ) : groups;
-  // إصلاح ترتيب: كان الترتيب بتاريخ آخر زيارة فقط، فمريض أُدخلت زيارته القديمة
-  // اليوم (تسجيل متأخّر) ما كان يظهر أعلى القائمة رغم إنه فعليًا "آخر إدخال" -
-  // الآن يعتمد على sortByEntryOrderDesc نفسها المستخدمة فى كل الصفحات الأخرى.
-  const filteredSorted = sortByEntryOrderDesc(filtered.map(g => ({ ...g, createdAt: g.lastVisit?.createdAt, date: g.lastVisit?.date })));
+  const filteredSummaries = summaries.filter(s => {
+    const matchesQuery = !q || (
+      (s.name || "").toLowerCase().includes(q) ||
+      (s.phone || "").toLowerCase().includes(q) ||
+      (s.fileNo || "").toLowerCase().includes(q)
+    );
+    const matchesPeriod = periodMatches(s.lastVisitDate, granularity, filterValue);
+    const matchesStatus = statusFilter === "all" || (statusFilter === "تم" ? (s.totalDue || 0) <= 0.009 : (s.totalDue || 0) > 0.009);
+    return matchesQuery && matchesPeriod && matchesStatus;
+  });
 
   const upcoming = allGroups.filter(g => g.nextFollowUp)
     .sort((a, b) => (a.nextFollowUp.nextVisitDate || "").localeCompare(b.nextFollowUp.nextVisitDate || ""))
     .slice(0, 20);
-  // تذكيرات صالحة للإرسال الجماعي: فقط المواعيد القادمة فعليًا (مش المتأخرة/الفائتة
-  // أصلًا) واللي عندها رقم هاتف صالح - إرسال تذكير لموعد فات معناه ليس له داعٍ.
   const remindableCount = upcoming.filter(g => g.nextFollowUp.nextVisitDate >= todayISO() && sanitizePhoneForWhatsApp(g.phone)).length;
 
   const selectedKey = state[K("selectedPatientKey")];
-  const selected = selectedKey ? allGroups.find(g => g.key === selectedKey) : null;
-  const hasQuery = !!q; // فيه بحث فعلى شغال دلوقتي؟
+  let selected = selectedKey ? allGroups.find(g => g.key === selectedKey) : null;
+  if (!selected && selectedKey) {
+    const sum = summaries.find(s => (s.patientKey || s.id) === selectedKey);
+    if (sum) {
+      selected = {
+        key: selectedKey,
+        name: sum.name,
+        phone: sum.phone,
+        fileNos: new Set([sum.fileNo].filter(Boolean)),
+        visits: allVisits.filter(v => patientKey(v) === selectedKey),
+        totalPaid: sum.totalPaid || 0,
+        totalDue: sum.totalDue || 0,
+      };
+    }
+  }
+
+  const pgInfo = isFirestore
+    ? {
+        current: curPage,
+        pageItems: filteredSummaries,
+        hasMore: !!pageState.hasMore[curPage],
+        total: (curPage - 1) * 30 + filteredSummaries.length
+      }
+    : (firestorePageInfo(pageKey, filteredSummaries) || paginateList(filteredSummaries, pageKey));
+  const hasQuery = !!q;
 
   const upcomingPanelHTML = upcoming.length ? `
     <div class="card" style="margin-bottom:16px; border:1px solid #C79A3E;">
@@ -4778,7 +5022,7 @@ function renderPatientFilesPage(kind) {
 
   const filtersHTML = `
     <div class="card" style="margin-bottom:16px; display:flex; align-items:end; justify-content:space-between; flex-wrap:wrap; gap:14px;">
-      ${periodFilterHTML("patient" + ns, granularity, filterValue, allVisits.map(v => v.date))}
+      ${periodFilterHTML("patient" + ns, granularity, filterValue, summaries.map(s => s.lastVisitDate).filter(Boolean))}
       <div>
         <div class="section-title" style="margin:0 0 6px;">💳 حالة الدفع</div>
         <select id="patientStatusSelect" style="padding:9px 10px; border-radius:8px; border:1px solid var(--border,#ccc); font-size:13.5px;">
@@ -4797,55 +5041,59 @@ function renderPatientFilesPage(kind) {
 
     ${selected ? renderPatientCard(selected) : (
       hasQuery
-        // فيه بحث فعّال: النتيجة (القائمة المفلترة) تظهر فورًا أعلى الصفحة مباشرة
-        // تحت شريط البحث، وتحتها مواعيد المتابعة والفلاتر - عشان اللي بيدور عن
-        // مريض بعينه يلاقي النتيجة على طول من غير ما ينزل لتحت.
-        ? `${renderPatientList(filteredSorted)}
+        ? `${renderPatientList(pgInfo.pageItems, pgInfo, pageKey)}
            ${upcomingPanelHTML}
            ${filtersHTML}`
-        // مفيش بحث شغال (تصفح عادى): الترتيب الافتراضى زي ما هو - المواعيد
-        // القادمة أولًا، بعدين الفلاتر، بعدين القائمة الكاملة.
         : `${upcomingPanelHTML}
            ${filtersHTML}
-           ${renderPatientList(filteredSorted)}`
+           ${renderPatientList(pgInfo.pageItems, pgInfo, pageKey)}`
     )}
   `;
 
   bindPeriodFilterEvents("patient" + ns, granKey, valKey);
+  bindPaginationEvents(c);
+
+  c.querySelectorAll("[data-patient-page-nav]").forEach(b => b.addEventListener("click", async () => {
+    const navKey = b.dataset.patientPageNav;
+    const target = Number(b.dataset.pageTo) || 1;
+    if (target < 1) return;
+    b.disabled = true;
+    try {
+      await loadPatientFileIndexPage(navKey, target);
+      route();
+    } catch (err) {
+      console.error("Patient file page navigation error:", err);
+      showToast("⚠️ تعذّر تحميل الصفحة");
+      b.disabled = false;
+    }
+  }));
+
   const statusSelect = document.getElementById("patientStatusSelect");
   if (statusSelect) statusSelect.addEventListener("change", () => { state[K("patientStatusFilter")] = statusSelect.value; state[K("selectedPatientKey")] = null; route(); });
 
   const searchInput = document.getElementById("patientSearchInput");
   if (searchInput) searchInput.addEventListener("input", () => {
-    // نحافظ على التركيز وموضع المؤشر بعد إعادة الرسم حتى لا تتوقف الكتابة عند أول حرف
     const caret = searchInput.selectionStart;
     state[K("patientSearch")] = searchInput.value; state[K("selectedPatientKey")] = null;
     route();
     const newInput = document.getElementById("patientSearchInput");
     if (newInput) { newInput.focus(); newInput.setSelectionRange(caret, caret); }
   });
-  c.querySelectorAll("[data-openpatient]").forEach(b => b.addEventListener("click", () => { state[K("selectedPatientKey")] = b.dataset.openpatient; route(); }));
+  c.querySelectorAll("[data-openpatient]").forEach(b => b.addEventListener("click", async () => {
+    const pKey = b.dataset.openpatient;
+    state[K("selectedPatientKey")] = pKey;
+    b.disabled = true;
+    await ensurePatientVisitsLoaded(kindKey, pKey);
+    route();
+  }));
   const backBtn = document.getElementById("backToPatientList");
   if (backBtn) backBtn.addEventListener("click", () => { state[K("selectedPatientKey")] = null; route(); });
   c.querySelectorAll("[data-gotovisit]").forEach(b => b.addEventListener("click", () => {
     state.page = b.dataset.kind; state.editId = b.dataset.gotovisit; route();
   }));
-  // تحصيل دفعة سريعة على مستحق قديم: بدل ما يُضطر المستخدم يفتح الزيارة القديمة
-  // كاملة للتعديل، أو (الأخطر) يسجّل زيارة جديدة منفصلة ظنًا منه أن هذا يُسقِط
-  // الدين القديم (وهو لا يفعل - كل زيارة رصيدها مستقل تمامًا).
-  // طريقة العمل (بعد التعديل بناءً على طلب صريح): بدل ما نزوّد "المدفوع" على
-  // الزيارة القديمة نفسها (وهو ما كان يُخفي مبلغ التحصيل داخل تاريخ الزيارة
-  // القديمة، فلا يظهر إيراد اليوم فعليًا فى يومية العيادات/الأسنان ولا فى تقرير
-  // اليوم) - دلوقتي بننقص "الإجمالي" على الزيارة القديمة بمقدار المبلغ المحصَّل
-  // (فينخفض "الباقي" عليها بنفس القدر، بالظبط زي الأول)، ثم نُنشئ زيارة "متابعة"
-  // جديدة حقيقية بتاريخ اليوم، إجماليها ومدفوعها = المبلغ المحصَّل بالظبط (فباقيها
-  // صفر دايمًا، مفيش دَين جديد) - فتظهر فى يومية القسم كزيارة اليوم، ويُحتسب
-  // إيرادها ونصيب الطبيب/المجمع منها ليومها الصحيح، من غير أي ازدواج فى الحساب:
-  // (إجمالى الزيارة القديمة بعد الخصم) + (إجمالى زيارة التحصيل الجديدة) = نفس
-  // الإجمالى الأصلى تمامًا كما كان قبل التحصيل.
   c.querySelectorAll("[data-collect]").forEach(b => b.addEventListener("click", async () => {
-    const kindKey = b.dataset.kind;
-    const list = kindKey === "dental" ? DB.visitsDental : DB.visitsClinic;
+    const kindKeyCollect = b.dataset.kind;
+    const list = kindKeyCollect === "dental" ? DB.visitsDental : DB.visitsClinic;
     const rec = list.find(v => v.id === b.dataset.collect);
     if (!rec) return;
     const remaining = visitRemaining(rec);
@@ -4853,41 +5101,16 @@ function renderPatientFilesPage(kind) {
     if (input === null) return;
     let amount = Number(String(input).replace(/[^\d.]/g, ""));
     if (!amount || amount <= 0) { showToast("⚠️ ادخل مبلغًا صحيحًا أكبر من صفر"); return; }
-    if (amount > remaining + 0.009) amount = remaining; // لا يمكن تحصيل أكثر من الباقي الفعلي على هذه الزيارة
+    if (amount > remaining + 0.009) amount = remaining;
     const oldRec = { ...rec };
     rec.total = (Number(rec.total) || 0) - amount;
     rec.status = visitRemaining(rec) <= 0.009 ? "تم" : "جزئي";
-    logActivity(kindKey === "dental" ? "تحصيل دفعة أسنان" : "تحصيل دفعة عيادات", kindKey, oldRec, rec);
-    const collectionVisit = {
-      id: uid(), date: todayISO(), fileNo: rec.fileNo || "", patient: rec.patient, phone: rec.phone,
-      doctorId: rec.doctorId, examType: "متابعة", total: amount, paid: amount, status: "تم",
-      notes: `تحصيل دفعة من مستحق زيارة ${rec.date || ""}`, nextVisitDate: null, createdAt: nowISO(),
-    };
-    list.push(collectionVisit);
-    await syncVisitIncomeLink(collectionVisit, kindKey);
-    let pushFailedOnline = false;
-    try {
-      await persist(kindKey === "dental" ? "visitsDental" : "visitsClinic");
-    } catch (err) {
-      console.error("Collect payment sync push failed (saved locally, will retry):", err);
-      pushFailedOnline = true;
-    }
-    if (pushFailedOnline) {
-      showToast(`💾 تم تسجيل التحصيل محليًا — تعذّر رفعه للسحابة الآن وسيُعاد رفعه تلقائيًا عند توفر الاتصال`, 3800);
-    } else {
-      saveToast(`تم تحصيل ${fmt(amount)} ج.م بنجاح — وسُجِّلت زيارة متابعة بتاريخ اليوم`);
-    }
+    logActivity(kindKeyCollect === "dental" ? "تحصيل دفعة أسنان" : "تحصيل دفعة عيادات", kindKeyCollect, oldRec, rec);
+    await syncPatientSummaryForVisit(rec, kindKeyCollect);
+    await persist(kindKeyCollect === "dental" ? "visitsDental" : "visitsClinic");
+    saveToast("تم تسجيل الدفعة بنجاح");
     route();
   }));
-  // تحصيل دفعة من "إجمالي المتبقي" على مستوى المريض ككل (مش زيارة بعينها): بيوزّع
-  // المبلغ المُدخَل على زياراته الأقدم فالأحدث (FIFO) - نفس منطق سداد الديون
-  // فى الواقع: تتقفل أقدم زيارة غير مسددة أولًا، ولو زاد المبلغ ينتقل للتالية،
-  // وهكذا حتى ينفد المبلغ أو تُسدَّد كل الزيارات. مفيد جدًا لو المريض عليه أكتر
-  // من زيارة قديمة غير مسددة ومش عايز تدوّر عليهم واحدة واحدة.
-  // نفس منطق التحصيل الفردى: بننقص "الإجمالي" على كل زيارة قديمة اتحصّل منها
-  // جزء (مش نزوّد "المدفوع" عليها)، ثم نُنشئ زيارة "متابعة" واحدة بتاريخ اليوم
-  // بكامل المبلغ المحصَّل دفعة واحدة (إجمالي = مدفوع = المبلغ، فباقيها صفر) -
-  // فيظهر التحصيل كإيراد حقيقى فى يومية اليوم، من غير أي ازدواج فى الحساب.
   c.querySelectorAll("[data-collect-total]").forEach(b => b.addEventListener("click", async () => {
     const g2 = allGroups.find(x => x.key === b.dataset.collectTotal);
     if (!g2) return;
@@ -4896,8 +5119,7 @@ function renderPatientFilesPage(kind) {
     if (input === null) return;
     let amount = Number(String(input).replace(/[^\d.]/g, ""));
     if (!amount || amount <= 0) { showToast("⚠️ ادخل مبلغًا صحيحًا أكبر من صفر"); return; }
-    if (amount > totalDue + 0.009) amount = totalDue; // لا يمكن تحصيل أكثر من إجمالي المتبقي الفعلي
-    // ترتيب الزيارات غير المسددة من الأقدم للأحدث (بعكس ترتيب العرض المعتاد بالأحدث أولًا)
+    if (amount > totalDue + 0.009) amount = totalDue;
     const unpaidOldestFirst = g2.visits.filter(v => visitRemaining(v) > 0.009)
       .slice().sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.createdAt || "").localeCompare(b.createdAt || ""));
     let remainingToApply = amount;
@@ -4916,12 +5138,12 @@ function renderPatientFilesPage(kind) {
       rec.total = (Number(rec.total) || 0) - applyNow;
       rec.status = visitRemaining(rec) <= 0.009 ? "تم" : "جزئي";
       logActivity(kindKey === "dental" ? "تحصيل دفعة أسنان" : "تحصيل دفعة عيادات", kindKey, oldRec, rec);
+      await syncPatientSummaryForVisit(rec, kindKey);
       touchedTables.add(kindKey === "dental" ? "visitsDental" : "visitsClinic");
       if (firstTouchedDoctorId === null) { firstTouchedDoctorId = rec.doctorId; firstTouchedDate = rec.date; firstTouchedKindKey = kindKey; }
       remainingToApply -= applyNow;
       if (rec.status === "تم") visitsSettled++;
     }
-    // زيارة "متابعة" واحدة بتاريخ اليوم تمثّل كامل المبلغ المحصَّل فى هذه العملية
     if (firstTouchedKindKey) {
       const collectionList = firstTouchedKindKey === "dental" ? DB.visitsDental : DB.visitsClinic;
       const collectionVisit = {
@@ -4931,6 +5153,7 @@ function renderPatientFilesPage(kind) {
       };
       collectionList.push(collectionVisit);
       await syncVisitIncomeLink(collectionVisit, firstTouchedKindKey);
+      await syncPatientSummaryForVisit(collectionVisit, firstTouchedKindKey);
       touchedTables.add(firstTouchedKindKey === "dental" ? "visitsDental" : "visitsClinic");
     }
     let pushFailedOnline = false;
@@ -8081,7 +8304,7 @@ const PAGE_REALTIME_KEYS = {
   ledger: ["income", "expense", "settings"],
   reports: ["income", "expense", "payroll", ...REVENUE_VISIT_DB_KEYS],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
-  patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
+  patientFilesClinic: ["patientFileIndexClinic"], patientFilesDental: ["patientFileIndexDental"],
   outstandingBalances: ["doctors"],
   outstandingBalancesClinic: [], outstandingBalancesDental: [],
   outstandingBalancesOperations: [], outstandingBalancesLabs: [],
