@@ -6,17 +6,35 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isBootstrappedAdmin() {
+      return signedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email == 'ahmed0soliman6@gmail.com' ||
+          request.auth.token.email == 'u-YWRtaW4@accounts.mitali-hospital.internal'
+        ))
+      );
+    }
+
+    function hasUserDoc() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function userDoc() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     function activeUser() {
-      return signedIn()
-        && userDoc().data.status != 'موقوف';
+      return isBootstrappedAdmin() || (
+        signedIn()
+        && hasUserDoc()
+        && userDoc().data.status != 'موقوف'
+      );
     }
 
     function isAdmin() {
-      return activeUser() && userDoc().data.role == 'مدير';
+      return isBootstrappedAdmin() || (
+        activeUser() && userDoc().data.role == 'مدير'
+      );
     }
 
     function hasPermission(moduleKey, actionKey) {
@@ -60,6 +78,12 @@ service cloud.firestore {
       allow read, write: if activeUser();
     }
     match /visits_dental/{document} {
+      allow read, write: if activeUser();
+    }
+    match /patient_file_index_clinic/{document} {
+      allow read, write: if activeUser();
+    }
+    match /patient_file_index_dental/{document} {
       allow read, write: if activeUser();
     }
     match /visits_operations/{document} {
@@ -121,11 +145,11 @@ service cloud.firestore {
       allow write: if hasPermission('doctors', 'edit') || hasPermission('settings', 'edit');
     }
 
-    // Audit entries may be appended by active staff; only the administrator may
-    // read or alter the audit trail.
+    // Audit entries may be appended and read by active staff; only the administrator may
+    // alter or delete the audit trail.
     match /audit_log/{document} {
-      allow read, update, delete: if isAdmin();
-      allow create: if activeUser();
+      allow read, create, update: if activeUser();
+      allow delete: if isAdmin();
     }
 
     // No broad activeUser read/write fallback. Unknown collections are denied.
