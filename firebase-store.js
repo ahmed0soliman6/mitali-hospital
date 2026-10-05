@@ -82,11 +82,11 @@
     return true;
   }
 
-  async function waitForAuth(timeoutMs = 1500) {
+  async function waitForAuth(timeoutMs = 5000) {
     init();
     if (!authReadyPromise) return null;
     const wait = authReadyPromise;
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), Math.max(200, Number(timeoutMs) || 1500)));
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), Math.max(1000, Number(timeoutMs) || 5000)));
     return await Promise.race([wait, timeout]);
   }
 
