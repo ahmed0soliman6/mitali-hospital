@@ -1,0 +1,5 @@
+desktop/
+.github/
+.vercel-deploy-trigger
+tools/create-windows-icon.py
+*.md

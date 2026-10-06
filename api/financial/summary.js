@@ -2,8 +2,8 @@ const { getAdmin } = require('../_lib/firebase-admin');
 
 function setCors(req, res) {
   const origin = String((req.headers && req.headers.origin) || '');
-  if (origin === 'null' || origin === 'https://mitali1.vercel.app' || origin.endsWith('.vercel.app') || (typeof process !== 'undefined' && process.env.ALLOW_RUN_APP_ORIGINS === '1' && origin.endsWith('.run.app')) || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+  if (!origin || origin === 'null' || origin.includes('.vercel.app') || origin.includes('.run.app') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Vary', 'Origin');

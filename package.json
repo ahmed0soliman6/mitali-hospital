@@ -1,7 +1,7 @@
 {
   "name": "mitali-hospital",
   "private": true,
-  "version": "1.3.48",
+  "version": "1.3.49",
   "description": "تطبيق سطح مكتب لإدارة مستشفى ميت على",
   "author": "Mitali Hospital",
   "main": "desktop/main.cjs",

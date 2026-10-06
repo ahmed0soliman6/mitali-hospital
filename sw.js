@@ -1,7 +1,5 @@
-// Bumped with the server-side pagination release so clients activate the new
-// index.html/firebase-store.js pair instead of retaining an older shell.
 const CACHE_NAME = 'hospital-v1.3.48-firestore-pagination';
-const urlsToCache = ['./index.html', './manifest.json', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
+const urlsToCache = ['./index.html', './firebase-store.js', './manifest.json', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
 
 function isApiRequest(request) {
   try {
