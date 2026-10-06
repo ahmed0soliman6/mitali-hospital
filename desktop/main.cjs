@@ -93,7 +93,7 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (isExternalUrl(url) && !url.includes('.vercel.app')) {
+    if (isExternalUrl(url) && !url.startsWith('https://mitali1.vercel.app/')) {
       event.preventDefault();
       shell.openExternal(url);
     }

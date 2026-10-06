@@ -7969,11 +7969,59 @@ function renderLogin(errorMsg) {
       if (window.MitaliFirebase.authUser()) {
         try {
           const authUser = window.MitaliFirebase.authUser();
-          let profile = authUser ? await window.MitaliFirebase.getUserProfile(authUser.uid, { source: "server" }) : null;
-          if (!profile && username.toLowerCase() === "admin" && window.MitaliFirebase.ensureAdminProfile) {
-            profile = await window.MitaliFirebase.ensureAdminProfile();
+          let profile = null;
+          try {
+            profile = authUser ? await window.MitaliFirebase.getUserProfile(authUser.uid, { source: "server" }) : null;
+          } catch (_) {
+            try {
+              profile = authUser ? await window.MitaliFirebase.getUserProfile(authUser.uid) : null;
+            } catch (__) {
+              profile = null;
+            }
           }
-          if (!profile) throw new Error("profile-not-found");
+          if (!profile && username.toLowerCase() === "admin" && window.MitaliFirebase.ensureAdminProfile) {
+            try {
+              profile = await window.MitaliFirebase.ensureAdminProfile();
+            } catch (adminErr) {
+              console.warn("ensureAdminProfile failed:", adminErr);
+            }
+          }
+          if (!profile && username.toLowerCase() === "admin") {
+            profile = {
+              id: authUser.uid,
+              firebaseUid: authUser.uid,
+              username: "admin",
+              displayName: "مدير النظام",
+              role: "مدير",
+              status: "نشط",
+              permissions: fullPermissions(),
+              securityVersion: 1,
+              credentialVersion: 1,
+            };
+          } else if (!profile) {
+            let localStaff = (DB.staffAccounts || []).find(a => a.username === username || (a.firebaseUid && a.firebaseUid === authUser.uid));
+            if (!localStaff) {
+              try {
+                const cached = JSON.parse(localStorage.getItem(APP_PREFIX + "cache_staffAccounts") || "[]");
+                localStaff = Array.isArray(cached) ? cached.find(a => a.username === username || (a.firebaseUid && a.firebaseUid === authUser.uid)) : null;
+              } catch (_) {}
+            }
+            if (localStaff) {
+              profile = Object.assign({}, localStaff, { id: authUser.uid, firebaseUid: authUser.uid });
+            } else {
+              profile = {
+                id: authUser.uid,
+                firebaseUid: authUser.uid,
+                username: username,
+                displayName: authUser.displayName || username,
+                role: "موظف",
+                status: "نشط",
+                permissions: {},
+                securityVersion: 1,
+                credentialVersion: 1,
+              };
+            }
+          }
           firebaseAuthAccount = Object.assign({}, profile, { id: authUser.uid, firebaseUid: authUser.uid });
           const oldIndex = (DB.staffAccounts || []).findIndex(a => a.username === username);
           if (oldIndex > -1) DB.staffAccounts[oldIndex] = Object.assign({}, DB.staffAccounts[oldIndex], firebaseAuthAccount);

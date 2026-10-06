@@ -1,28 +1,6 @@
 {
   "outputDirectory": ".",
-  "cleanUrls": true,
-  "rewrites": [
-    {
-      "source": "/api/admin/account",
-      "destination": "/api/admin/account.js"
-    },
-    {
-      "source": "/api/admin/data",
-      "destination": "/api/admin/data.js"
-    },
-    {
-      "source": "/api/auth/profile",
-      "destination": "/api/auth/profile.js"
-    },
-    {
-      "source": "/api/financial/summary",
-      "destination": "/api/financial/summary.js"
-    },
-    {
-      "source": "/((?!api/|sw\\.js|manifest\\.webmanifest|manifest\\.json|firebase-store\\.js|icon.*|apple-touch.*|favicon.*).*)$",
-      "destination": "/index.html"
-    }
-  ],
+  "buildCommand": "node tools/check-js-syntax.js",
   "headers": [
     {
       "source": "/sw.js",

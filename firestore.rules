@@ -6,29 +6,17 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isBootstrappedAdmin() {
-      return signedIn() && (
-        (request.auth.token.email != null && (
-          request.auth.token.email == 'ahmed0soliman6@gmail.com' ||
-          request.auth.token.email == 'u-YWRtaW4@accounts.mitali-hospital.internal'
-        ))
-      );
-    }
-
-    function hasUserDoc() {
-      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
-    }
-
     function userDoc() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     function activeUser() {
-      return isBootstrappedAdmin() || (signedIn() && hasUserDoc() && userDoc().data.status != 'موقوف');
+      return signedIn()
+        && userDoc().data.status != 'موقوف';
     }
 
     function isAdmin() {
-      return isBootstrappedAdmin() || (activeUser() && userDoc().data.role == 'مدير');
+      return activeUser() && userDoc().data.role == 'مدير';
     }
 
     function hasPermission(moduleKey, actionKey) {
@@ -72,6 +60,12 @@ service cloud.firestore {
       allow read, write: if activeUser();
     }
     match /visits_dental/{document} {
+      allow read, write: if activeUser();
+    }
+    match /patient_file_index_clinic/{document} {
+      allow read, write: if activeUser();
+    }
+    match /patient_file_index_dental/{document} {
       allow read, write: if activeUser();
     }
     match /visits_operations/{document} {
