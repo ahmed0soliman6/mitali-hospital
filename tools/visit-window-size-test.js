@@ -27,9 +27,14 @@ function size(page, key) {
 
 // صفحة اليومية نفسها: 30
 for (const s of SOURCES) assert.strictEqual(size(s.kindKey, s.dbKey), 30, s.kindKey + ' diary keeps 30');
-// الرئيسية والتقارير والمستحقات وملفات المرضى: 50 (النافذة التي تُحسب منها الأرقام)
-for (const page of ['dashboard', 'reports', 'payroll', 'outstandingBalancesClinic', 'patientFilesDental']) {
+// الرئيسية والتقارير والمستحقات: 50، بينما ملفات المرضى تستخدم نافذة 30
+// لتقسيم قائمة الملفات وتقليل القراءة السحابية عند فتحها.
+for (const page of ['dashboard', 'reports', 'payroll', 'outstandingBalancesClinic']) {
   for (const s of SOURCES) assert.strictEqual(size(page, s.dbKey), 50, `${page}/${s.dbKey} keeps the 50-row window`);
+}
+for (const page of ['patientFilesClinic', 'patientFilesDental']) {
+  const key = page === 'patientFilesClinic' ? 'visitsClinic' : 'visitsDental';
+  assert.strictEqual(size(page, key), 30, `${page}/${key} uses the 30-row window`);
 }
 // جداول أخرى لا تتأثر
 assert.strictEqual(size('payroll', 'payroll'), 30);
@@ -41,4 +46,4 @@ assert.match(index, /const listenerOptions = SERVER_PAGED_KEYS\.has\(key\)\s*\n\
 assert.doesNotMatch(index, /Object\.assign\(pageQueryOptions\(key, currentPage\), \{ pageSize: PAGE_SIZE \}\)/);
 assert.match(index, /const PAGE_SIZE = 30;/);
 
-console.log('PASS visit-window-size-test: diary pages load 30 visits, every other page keeps the 50-row window, and realtime listeners use the same window as the page load.');
+console.log('PASS visit-window-size-test: diary and patient-file pages load 30 rows, other summary pages keep the 50-row window, and realtime listeners use the same window as the page load.');

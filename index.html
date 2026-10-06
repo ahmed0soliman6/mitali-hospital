@@ -1818,6 +1818,7 @@ const PAGE_PRIMARY_KEY = Object.freeze({
   clinic: "visitsClinic", dental: "visitsDental", operations: "visitsOperations",
   labs: "visitsLabs", radiology: "visitsRadiology", income: "income", expense: "expense",
   payroll: "payroll", auditlog: "auditLog",
+  patientFilesClinic: "visitsClinic", patientFilesDental: "visitsDental",
 });
 function getFirestorePageState(key) {
   if (!FIRESTORE_PAGE_STATE[key]) {
@@ -1870,9 +1871,35 @@ function pageQueryOptions(key, page) {
   // اليوميات فقط: فلتر الفترة يُطبَّق في الاستعلام نفسه. بقية الصفحات (الرئيسية، التقارير...)
   // تبقى على سلوكها الحالي دون فلتر حتى لا تتغير أرقامها بتغيير فلتر يومية.
   const visitSource = VISIT_SOURCE_DEFINITIONS.find(source => source.dbKey === key);
+  const patientFileSource = key === "visitsClinic" && state.page === "patientFilesClinic"
+    ? { ns: "Clinic" }
+    : key === "visitsDental" && state.page === "patientFilesDental"
+      ? { ns: "Dental" }
+      : null;
+  if (patientFileSource) {
+    const granularity = state[`patientFilterGran${patientFileSource.ns}`] || "all";
+    const value = state[`patientFilterVal${patientFileSource.ns}`] || null;
+    if (granularity === "day" && /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) {
+      options.where = [{ field: "date", op: "==", value }];
+    } else if (granularity === "month" && /^\d{4}-\d{2}$/.test(String(value || ""))) {
+      const [year, month] = String(value).split("-").map(Number);
+      const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      options.where = [
+        { field: "date", op: ">=", value: `${value}-01` },
+        { field: "date", op: "<=", value: `${value}-${String(lastDay).padStart(2, "0")}` },
+      ];
+    } else if (granularity === "year" && /^\d{4}$/.test(String(value || ""))) {
+      options.where = [
+        { field: "date", op: ">=", value: `${value}-01-01` },
+        { field: "date", op: "<=", value: `${value}-12-31` },
+      ];
+    }
+    const status = state[`patientStatusFilter${patientFileSource.ns}`] || "all";
+    if (status !== "all") options.where = [...(options.where || []), { field: "status", op: "==", value: status }];
+  }
   // نافذة 30 سجلًا لصفحة اليومية نفسها فقط. الرئيسية والتقارير والمستحقات وملفات المرضى
   // تحسب أرقامها من أول صفحة، فتبقى 50 كما كانت حتى لا تتسع فجوة الأرقام المقطوعة.
-  if (visitSource && state.page !== visitSource.kindKey) options.pageSize = 50;
+  if (visitSource && state.page !== visitSource.kindKey && !patientFileSource) options.pageSize = 50;
   if (visitSource && state.page === visitSource.kindKey) {
     const range = visitPeriodDateRange(visitSource.kindKey);
     if (range) {
@@ -4633,20 +4660,23 @@ console.log("Visits page ready.");
 // ======================================================================
 // صفحة ملفات المرضى (بطاقة موحّدة لكل مريض عبر العيادات والأسنان)
 // ======================================================================
-function renderPatientList(list) {
+function renderPatientList(list, pageInfo = null, pageKey = "") {
   if (!list.length) {
     return `<div class="card" style="text-align:center; padding:50px 20px;">
       <div style="font-size:36px; margin-bottom:10px;">🔍</div>
       <div class="hint">لا توجد نتائج مطابقة للبحث</div>
     </div>`;
   }
+  // pageInfo يحدد نافذة Firestore الحالية، بينما list يحتوي مجموعات المرضى الناتجة
+  // من هذه النافذة. لا نعرض سجلات الزيارة الخام داخل جدول ملفات المرضى.
+  const visible = list;
   return `
     <div class="card">
-      <div class="section-title">قائمة المرضى <span class="hint">${list.length} مريض</span></div>
+      <div class="section-title">قائمة المرضى <span class="hint">${pageInfo ? `يعرض ${pageInfo.start}-${pageInfo.end}` : `${list.length} مريض`}</span></div>
       <div class="table-wrap"><table>
         <thead><tr><th>الاسم</th><th>الهاتف</th><th>عدد الزيارات</th><th>آخر زيارة</th><th>إجمالي المتبقي</th><th></th></tr></thead>
         <tbody>
-          ${list.map(g => `
+          ${visible.map(g => `
             <tr>
               <td style="font-weight:700;">${esc(g.name || "-")}</td>
               <td>${esc(g.phone || "-")} ${waIconButtonHTML(g.phone, "wa-patient", g.key)}</td>
@@ -4657,6 +4687,7 @@ function renderPatientList(list) {
             </tr>`).join("")}
         </tbody>
       </table></div>
+      ${pageInfo && pageKey ? paginationControlsHTML(pageKey, pageInfo) : ""}
     </div>`;
 }
 function renderPatientCard(g) {
@@ -4743,6 +4774,9 @@ function renderPatientFilesPage(kind) {
   // اليوم (تسجيل متأخّر) ما كان يظهر أعلى القائمة رغم إنه فعليًا "آخر إدخال" -
   // الآن يعتمد على sortByEntryOrderDesc نفسها المستخدمة فى كل الصفحات الأخرى.
   const filteredSorted = sortByEntryOrderDesc(filtered.map(g => ({ ...g, createdAt: g.lastVisit?.createdAt, date: g.lastVisit?.date })));
+  const patientPageKey = `patientFiles${ns}`;
+  const patientPageInfo = firestorePageInfo(patientPageKey, filteredSorted);
+  const visiblePatients = patientPageInfo ? patientPageInfo.pageItems : filteredSorted;
 
   const upcoming = allGroups.filter(g => g.nextFollowUp)
     .sort((a, b) => (a.nextFollowUp.nextVisitDate || "").localeCompare(b.nextFollowUp.nextVisitDate || ""))
@@ -4800,18 +4834,19 @@ function renderPatientFilesPage(kind) {
         // فيه بحث فعّال: النتيجة (القائمة المفلترة) تظهر فورًا أعلى الصفحة مباشرة
         // تحت شريط البحث، وتحتها مواعيد المتابعة والفلاتر - عشان اللي بيدور عن
         // مريض بعينه يلاقي النتيجة على طول من غير ما ينزل لتحت.
-        ? `${renderPatientList(filteredSorted)}
+        ? `${renderPatientList(visiblePatients, patientPageInfo, patientPageKey)}
            ${upcomingPanelHTML}
            ${filtersHTML}`
         // مفيش بحث شغال (تصفح عادى): الترتيب الافتراضى زي ما هو - المواعيد
         // القادمة أولًا، بعدين الفلاتر، بعدين القائمة الكاملة.
         : `${upcomingPanelHTML}
            ${filtersHTML}
-           ${renderPatientList(filteredSorted)}`
+           ${renderPatientList(visiblePatients, patientPageInfo, patientPageKey)}`
     )}
   `;
 
   bindPeriodFilterEvents("patient" + ns, granKey, valKey);
+  bindPaginationEvents(c);
   const statusSelect = document.getElementById("patientStatusSelect");
   if (statusSelect) statusSelect.addEventListener("change", () => { state[K("patientStatusFilter")] = statusSelect.value; state[K("selectedPatientKey")] = null; route(); });
 
