@@ -4661,7 +4661,8 @@ console.log("Visits page ready.");
 // صفحة ملفات المرضى (بطاقة موحّدة لكل مريض عبر العيادات والأسنان)
 // ======================================================================
 function renderPatientList(list, pageInfo = null, pageKey = "") {
-  if (!list.length) {
+  const safeList = Array.isArray(list) ? list : [];
+  if (!safeList.length) {
     return `<div class="card" style="text-align:center; padding:50px 20px;">
       <div style="font-size:36px; margin-bottom:10px;">🔍</div>
       <div class="hint">لا توجد نتائج مطابقة للبحث</div>
@@ -4669,22 +4670,28 @@ function renderPatientList(list, pageInfo = null, pageKey = "") {
   }
   // pageInfo يحدد نافذة Firestore الحالية، بينما list يحتوي مجموعات المرضى الناتجة
   // من هذه النافذة. لا نعرض سجلات الزيارة الخام داخل جدول ملفات المرضى.
-  const visible = list;
+  const visible = safeList;
   return `
     <div class="card">
-      <div class="section-title">قائمة المرضى <span class="hint">${pageInfo ? `يعرض ${pageInfo.start}-${pageInfo.end}` : `${list.length} مريض`}</span></div>
+      <div class="section-title">قائمة المرضى <span class="hint">${pageInfo ? `يعرض ${pageInfo.start}-${pageInfo.end}` : `${safeList.length} مريض`}</span></div>
       <div class="table-wrap"><table>
         <thead><tr><th>الاسم</th><th>الهاتف</th><th>عدد الزيارات</th><th>آخر زيارة</th><th>إجمالي المتبقي</th><th></th></tr></thead>
         <tbody>
-          ${visible.map(g => `
+          ${visible.map(g => {
+            if (!g) return "";
+            const visits = Array.isArray(g.visits) ? g.visits : [];
+            const lastVisit = g.lastVisit || (visits.length ? visits[visits.length - 1] : null);
+            const totalDue = Number(g.totalDue || 0);
+            return `
             <tr>
-              <td style="font-weight:700;">${esc(g.name || "-")}</td>
-              <td>${esc(g.phone || "-")} ${waIconButtonHTML(g.phone, "wa-patient", g.key)}</td>
-              <td>${fmtInt(g.visits.length)}</td>
-              <td>${g.lastVisit?.date || "-"}${entryTimeDisplay(g.lastVisit?.createdAt) ? `<div class="hint" style="font-size:11px;">${entryTimeDisplay(g.lastVisit.createdAt)}</div>` : ""}</td>
-              <td style="color:${g.totalDue > 0 ? "var(--expense)" : "var(--ink)"}; font-weight:${g.totalDue > 0 ? 700 : 400};">${fmt(g.totalDue)}</td>
-              <td><button class="btn sm" data-openpatient="${esc(g.key)}">عرض الملف</button></td>
-            </tr>`).join("")}
+              <td style="font-weight:700;">${esc(g.name || g.patientName || "-")}</td>
+              <td>${esc(g.phone || "-")} ${waIconButtonHTML(g.phone, "wa-patient", g.key || g.id)}</td>
+              <td>${fmtInt(visits.length || 1)}</td>
+              <td>${lastVisit?.date || g.date || "-"}${entryTimeDisplay(lastVisit?.createdAt || g.createdAt) ? `<div class="hint" style="font-size:11px;">${entryTimeDisplay(lastVisit?.createdAt || g.createdAt)}</div>` : ""}</td>
+              <td style="color:${totalDue > 0 ? "var(--expense)" : "var(--ink)"}; font-weight:${totalDue > 0 ? 700 : 400};">${fmt(totalDue)}</td>
+              <td><button class="btn sm" data-openpatient="${esc(g.key || g.patientName || g.name || '')}">عرض الملف</button></td>
+            </tr>`;
+          }).join("")}
         </tbody>
       </table></div>
       ${pageInfo && pageKey ? paginationControlsHTML(pageKey, pageInfo) : ""}
@@ -4776,7 +4783,9 @@ function renderPatientFilesPage(kind) {
   const filteredSorted = sortByEntryOrderDesc(filtered.map(g => ({ ...g, createdAt: g.lastVisit?.createdAt, date: g.lastVisit?.date })));
   const patientPageKey = `patientFiles${ns}`;
   const patientPageInfo = firestorePageInfo(patientPageKey, filteredSorted);
-  const visiblePatients = patientPageInfo ? patientPageInfo.pageItems : filteredSorted;
+  const visiblePatients = patientPageInfo && Array.isArray(patientPageInfo.pageItems)
+    ? groupPatients(patientPageInfo.pageItems)
+    : filteredSorted;
 
   const upcoming = allGroups.filter(g => g.nextFollowUp)
     .sort((a, b) => (a.nextFollowUp.nextVisitDate || "").localeCompare(b.nextFollowUp.nextVisitDate || ""))
