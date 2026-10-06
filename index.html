@@ -4754,8 +4754,15 @@ function renderPatientFilesPage(kind) {
   // القسم) عشان التنقل بين الصفحتين ما يخلطش بحث/فلتر/مريض مفتوح فى واحدة
   // مع التانية.
   const ns = kind === "أسنان" ? "Dental" : "Clinic";
+  const listKey = ns === "Dental" ? "visitsDental" : "visitsClinic";
   const K = (base) => base + ns;
-  const allVisits = allPatientVisits().filter(v => v.kind === kind);
+  // دمج الزيارات المحلية مع أي سجلات تاريخية موجودة مسبقًا في ذاكرة المستحقات
+  // دون أي قراءات إضافية من Firestore (Zero-Read Reuse)
+  const cachedExact = (typeof exactVisitRows === "function" ? exactVisitRows(listKey, "all") : null) || [];
+  const baseVisits = allPatientVisits().filter(v => v.kind === kind);
+  const knownIds = new Set(baseVisits.map(v => String(v.id || '')));
+  const extraVisits = cachedExact.filter(v => v && v.id && !knownIds.has(String(v.id))).map(v => ({ ...v, kind, kindKey: listKey }));
+  const allVisits = baseVisits.concat(extraVisits);
   const allGroups = groupPatients(allVisits); // بدون فلاتر - تُستخدم للمتابعات القادمة وفتح ملف مريض بعينه
 
   const granKey = "patientFilterGran" + ns, valKey = "patientFilterVal" + ns;
@@ -4772,7 +4779,10 @@ function renderPatientFilesPage(kind) {
 
   const search = state[K("patientSearch")] || "";
   const q = search.trim().toLowerCase();
-  const filtered = q ? groups.filter(g =>
+  // عند وجود استعلام بحث: نبحث عبر جميع السجلات (allGroups) حتى يجد المريض القديم
+  // وإن كانت زيارته في فترة سابقة، وعند عدم وجود بحث نلتزم بالقائمة المفلترة بالفترة.
+  const sourceGroups = q ? allGroups : groups;
+  const filtered = q ? sourceGroups.filter(g =>
     (g.name || "").toLowerCase().includes(q) ||
     (g.phone || "").toLowerCase().includes(q) ||
     g.fileNos.some(f => f.toLowerCase().includes(q))
@@ -4782,7 +4792,7 @@ function renderPatientFilesPage(kind) {
   // الآن يعتمد على sortByEntryOrderDesc نفسها المستخدمة فى كل الصفحات الأخرى.
   const filteredSorted = sortByEntryOrderDesc(filtered.map(g => ({ ...g, createdAt: g.lastVisit?.createdAt, date: g.lastVisit?.date })));
   const patientPageKey = `patientFiles${ns}`;
-  const patientPageInfo = firestorePageInfo(patientPageKey, filteredSorted);
+  const patientPageInfo = q ? null : firestorePageInfo(patientPageKey, filteredSorted);
   const visiblePatients = patientPageInfo && Array.isArray(patientPageInfo.pageItems)
     ? groupPatients(patientPageInfo.pageItems)
     : filteredSorted;
@@ -4890,7 +4900,11 @@ function renderPatientFilesPage(kind) {
   c.querySelectorAll("[data-collect]").forEach(b => b.addEventListener("click", async () => {
     const kindKey = b.dataset.kind;
     const list = kindKey === "dental" ? DB.visitsDental : DB.visitsClinic;
-    const rec = list.find(v => v.id === b.dataset.collect);
+    let rec = list.find(v => v.id === b.dataset.collect);
+    if (!rec) {
+      const fromAll = allVisits.find(v => v.id === b.dataset.collect);
+      if (fromAll) { list.push(fromAll); rec = fromAll; }
+    }
     if (!rec) return;
     const remaining = visitRemaining(rec);
     const input = prompt(`تحصيل دفعة من "${rec.patient || "المريض"}"\nالمبلغ المتبقي على هذه الزيارة: ${fmt(remaining)} ج.م\nادخل المبلغ المُحصَّل الآن:`, fmt(remaining));
@@ -4952,7 +4966,11 @@ function renderPatientFilesPage(kind) {
       if (remainingToApply <= 0.009) break;
       const kindKey = v.kindKey;
       const list = kindKey === "dental" ? DB.visitsDental : DB.visitsClinic;
-      const rec = list.find(x => x.id === v.id);
+      let rec = list.find(x => x.id === v.id);
+      if (!rec) {
+        const fromAll = allVisits.find(x => x.id === v.id);
+        if (fromAll) { list.push(fromAll); rec = fromAll; }
+      }
       if (!rec) continue;
       const remaining = visitRemaining(rec);
       const applyNow = Math.min(remaining, remainingToApply);
