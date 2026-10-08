@@ -128,6 +128,14 @@ service cloud.firestore {
       allow create: if activeUser();
     }
 
+    match /patient_file_index_clinic/{document} {
+      allow read: if activeUser();
+    }
+
+    match /patient_file_index_dental/{document} {
+      allow read: if activeUser();
+    }
+
     // No broad activeUser read/write fallback. Unknown collections are denied.
     match /{collection}/{document} {
       allow read, write: if false;

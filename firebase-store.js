@@ -36,7 +36,9 @@
     categories: "categories",
     specialties: "specialties",
     settings: "settings",
-    systemControl: "system_control"
+    systemControl: "system_control",
+    patientFileIndexClinic: "patient_file_index_clinic",
+    patientFileIndexDental: "patient_file_index_dental"
   };
 
   let app = null;
@@ -91,9 +93,12 @@
   }
 
   function collectionName(key) {
+    if (key === "patientFilesClinic" || key === "patient_file_index_clinic") return "patient_file_index_clinic";
+    if (key === "patientFilesDental" || key === "patient_file_index_dental") return "patient_file_index_dental";
     const name = COLLECTIONS[key];
-    if (!name) throw new Error(`Unknown Firestore collection: ${key}`);
-    return name;
+    if (name) return name;
+    if (Object.values(COLLECTIONS).includes(key)) return key;
+    throw new Error(`Unknown Firestore collection: ${key}`);
   }
 
   function cleanDocument(value) {
@@ -437,21 +442,24 @@
     visitsRadiology: { primary: "date" }, income: { primary: "date" },
     expense: { primary: "date" }, payroll: { primary: "month" },
     labExpenses: { primary: "month" }, auditLog: { primary: "timestamp" },
+    patientFilesClinic: { primary: "updatedAt" }, patientFilesDental: { primary: "updatedAt" },
+    patientFileIndexClinic: { primary: "updatedAt" }, patientFileIndexDental: { primary: "updatedAt" },
+    patient_file_index_clinic: { primary: "updatedAt" }, patient_file_index_dental: { primary: "updatedAt" },
   });
   function pageQuery(key, options = {}) {
-    const config = PAGE_QUERY_CONFIG[key];
-    if (!config) throw new Error(`No safe page query configured for: ${key}`);
-    const pageSize = Math.min(Math.max(Number(options.pageSize) || 30, 1), 50);
-    const orderField = options.orderField || config.primary;
+    const config = PAGE_QUERY_CONFIG[key] || { primary: "updatedAt" };
+    const safeOptions = (options && typeof options === "object") ? options : {};
+    const pageSize = Math.min(Math.max(Number(safeOptions.pageSize) || 30, 1), 50);
+    const orderField = safeOptions.orderField || config.primary;
     let query = db.collection(collectionName(key));
-    const filters = Array.isArray(options.where) ? options.where : (options.where ? [options.where] : []);
+    const filters = Array.isArray(safeOptions.where) ? safeOptions.where : (safeOptions.where ? [safeOptions.where] : []);
     for (const filter of filters) {
       if (filter && filter.field && filter.op && filter.value !== undefined) query = query.where(filter.field, filter.op, filter.value);
     }
     query = query.orderBy(orderField, "desc")
       .orderBy(window.firebase.firestore.FieldPath.documentId(), "desc")
       .limit(pageSize);
-    const cursor = options.cursor;
+    const cursor = safeOptions.cursor;
     if (cursor && cursor.primaryValue !== undefined && cursor.documentId) {
       query = query.startAfter(cursor.primaryValue, String(cursor.documentId));
     }
@@ -459,8 +467,9 @@
   }
   async function getPage(key, options = {}) {
     await ready();
-    const { query, pageSize, orderField } = pageQuery(key, options);
-    const snap = options.source ? await query.get({ source: options.source }) : await query.get();
+    const safeOptions = (options && typeof options === "object") ? options : {};
+    const { query, pageSize, orderField } = pageQuery(key, safeOptions);
+    const snap = safeOptions.source ? await query.get({ source: safeOptions.source }) : await query.get();
     recordReadMetric(key, snap.docs.length);
     const records = snap.docs.map(doc => Object.assign({ id: doc.id }, doc.data()));
     const last = snap.docs[snap.docs.length - 1];
@@ -586,6 +595,77 @@
     );
   }
 
+  async function getPatientIndexPage(pageKey, cursor = null) {
+    await ready();
+    const collectionName =
+      pageKey === 'patientFilesClinic'
+        ? 'patient_file_index_clinic'
+        : 'patient_file_index_dental';
+
+    try {
+      if (typeof query === 'function' && typeof collection === 'function' && typeof getDocs === 'function') {
+        let q = query(
+          collection(db, collectionName),
+          orderBy('updatedAt', 'desc'),
+          ...(cursor ? [startAfter(cursor)] : []),
+          limit(31)
+        );
+        const snap = await getDocs(q);
+        recordReadMetric(collectionName, snap.docs.length);
+        const docs = snap.docs.slice(0, 30);
+        return {
+          records: docs.map(d => ({ id: d.id, ...(typeof d.data === 'function' ? d.data() : d.data) })),
+          hasMore: snap.docs.length > 30,
+          nextCursor: docs.length ? docs[docs.length - 1] : null
+        };
+      }
+
+      let q = db.collection(collectionName).orderBy('updatedAt', 'desc');
+      if (cursor) {
+        if (cursor && cursor.primaryValue !== undefined && cursor.documentId) {
+          q = q.startAfter(cursor.primaryValue, String(cursor.documentId));
+        } else {
+          q = q.startAfter(cursor);
+        }
+      }
+      q = q.limit(31);
+      const snap = await q.get();
+      recordReadMetric(collectionName, snap.docs.length);
+      const docs = snap.docs.slice(0, 30);
+      return {
+        records: docs.map(d => ({ id: d.id, ...(typeof d.data === 'function' ? d.data() : d.data) })),
+        hasMore: snap.docs.length > 30,
+        nextCursor: docs.length ? docs[docs.length - 1] : null
+      };
+    } catch (err) {
+      console.warn(`getPatientIndexPage failed for ${collectionName}:`, err?.message || err);
+      try {
+        let q = db.collection(collectionName);
+        if (cursor) {
+          if (cursor && cursor.primaryValue !== undefined && cursor.documentId) {
+            q = q.startAfter(cursor.primaryValue, String(cursor.documentId));
+          } else {
+            q = q.startAfter(cursor);
+          }
+        }
+        q = q.limit(31);
+        const snap = await q.get();
+        recordReadMetric(collectionName, snap.docs.length);
+        const docs = snap.docs.slice(0, 30);
+        return {
+          records: docs.map(d => ({ id: d.id, ...(typeof d.data === 'function' ? d.data() : d.data) })),
+          hasMore: snap.docs.length > 30,
+          nextCursor: docs.length ? docs[docs.length - 1] : null
+        };
+      } catch (fallbackErr) {
+        console.warn(`Fallback query for ${collectionName} also failed:`, fallbackErr?.message || fallbackErr);
+        return { records: [], hasMore: false, nextCursor: null };
+      }
+    }
+  }
+
+  window.getPatientIndexPage = getPatientIndexPage;
+
   window.MitaliFirebase = Object.freeze({
     config: Object.freeze({ projectId: firebaseConfig.projectId }),
     collections: Object.freeze(Object.assign({}, COLLECTIONS)),
@@ -593,6 +673,7 @@
     ready,
     getTable,
     getPage,
+    getPatientIndexPage,
     setTable,
     getValue,
     getReadMetrics,
