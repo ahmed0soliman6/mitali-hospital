@@ -666,6 +666,65 @@
 
   window.getPatientIndexPage = getPatientIndexPage;
 
+  async function searchPatientIndex(pageKey, searchTerm) {
+    await ready();
+
+    const collectionName =
+      pageKey === "patientFilesClinic"
+        ? "patient_file_index_clinic"
+        : "patient_file_index_dental";
+
+    const term = String(searchTerm || "").trim();
+
+    if (!term) return [];
+
+    try {
+      const ref = db.collection(collectionName);
+
+      // رقم الملف
+      if (/^\d+$/.test(term)) {
+        const snap = await ref
+          .where("fileNo", "==", term)
+          .limit(30)
+          .get();
+
+        if (!snap.empty) {
+          recordReadMetric(collectionName, snap.docs.length);
+          return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
+        }
+      }
+
+      // الهاتف
+      if (/^[0-9+\-\s]+$/.test(term)) {
+        const snap = await ref
+          .where("phone", "==", term)
+          .limit(30)
+          .get();
+
+        recordReadMetric(collectionName, snap.docs.length);
+        return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
+      }
+
+      // الاسم: يبدأ بما كتبه المستخدم
+      const end = term + "\uf8ff";
+
+      const snap = await ref
+        .where("name", ">=", term)
+        .where("name", "<=", end)
+        .orderBy("name")
+        .limit(30)
+        .get();
+
+      recordReadMetric(collectionName, snap.docs.length);
+      return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
+    } catch (err) {
+      console.warn(`searchPatientIndex failed for ${collectionName}:`, err?.message || err);
+      return [];
+    }
+  }
+
+  window.searchPatientIndex = searchPatientIndex;
+
   window.MitaliFirebase = Object.freeze({
     config: Object.freeze({ projectId: firebaseConfig.projectId }),
     collections: Object.freeze(Object.assign({}, COLLECTIONS)),
@@ -674,6 +733,7 @@
     getTable,
     getPage,
     getPatientIndexPage,
+    searchPatientIndex,
     setTable,
     getValue,
     getReadMetrics,
