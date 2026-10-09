@@ -1643,7 +1643,7 @@ const PAGE_DATA_KEYS = {
   clinic: ["doctors", "visitsClinic"], dental: ["doctors", "visitsDental"],
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
   radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
-  ledger: ["income", "expense", "settings"], payroll: ["employees", "doctors", "payroll", "labExpenses", ...REVENUE_VISIT_DB_KEYS, "income"],
+  ledger: ["income", "expense", "settings"], payroll: ["employees", "doctors", "payroll", "labExpenses", ...REVENUE_VISIT_DB_KEYS],
   reports: [],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
@@ -2015,7 +2015,115 @@ async function cascadeDeleteVisitForIncome(link) {
 const EXACT_VISITS = Object.create(null);        // dbKey -> { scope, rows, at }
 const EXACT_VISITS_ERRORS = Object.create(null); // dbKey -> رسالة الخطأ
 const EXACT_VISITS_LOADING = new Map();
-function settlementMonthKey() { return state.payrollMonth || state.settlementMonth || todayISO().slice(0, 7); }
+const DOCTOR_REPORTS_CACHE = Object.create(null);        // ym -> { data, at }
+const DOCTOR_REPORTS_INFLIGHT = new Map();              // ym -> Promise
+const DOCTOR_REPORTS_ERRORS = Object.create(null);       // ym -> errorMessage
+const DOCTOR_REPORTS_TTL_MS = 5 * 60 * 1000;
+
+function invalidateDoctorReportsCache(month) {
+  if (month && typeof month === "string") {
+    const ym = month.slice(0, 7);
+    delete DOCTOR_REPORTS_CACHE[ym];
+    delete DOCTOR_REPORTS_ERRORS[ym];
+    if (typeof REPORTS_CACHE !== "undefined") {
+      for (const key of Object.keys(REPORTS_CACHE)) {
+        if (key.includes(ym)) delete REPORTS_CACHE[key];
+      }
+    }
+  } else {
+    for (const key of Object.keys(DOCTOR_REPORTS_CACHE)) delete DOCTOR_REPORTS_CACHE[key];
+    for (const key of Object.keys(DOCTOR_REPORTS_ERRORS)) delete DOCTOR_REPORTS_ERRORS[key];
+    if (typeof REPORTS_CACHE !== "undefined") {
+      for (const key of Object.keys(REPORTS_CACHE)) delete REPORTS_CACHE[key];
+    }
+  }
+}
+
+async function getUnifiedDoctorReport(month, options = {}) {
+  const ym = String(month || settlementMonthKey() || todayISO().slice(0, 7)).trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return null;
+
+  if (!options.force && DOCTOR_REPORTS_CACHE[ym] && (Date.now() - DOCTOR_REPORTS_CACHE[ym].at < DOCTOR_REPORTS_TTL_MS)) {
+    return DOCTOR_REPORTS_CACHE[ym].data;
+  }
+
+  if (DOCTOR_REPORTS_INFLIGHT.has(ym)) {
+    return await DOCTOR_REPORTS_INFLIGHT.get(ym);
+  }
+
+  if (STORAGE_MODE !== "firestore" || !window.MitaliFirebase || !window.MitaliFirebase.authUser || !window.MitaliFirebase.authUser() || !window.MitaliFirebase.getDoctorMonthReport) {
+    const exactPlan = exactVisitsPlan("payroll");
+    const visits = (exactPlan && exactVisitsReady(exactPlan))
+      ? exactMonthVisits(ym)
+      : allRevenueVisits().filter(v => (v.date || "").startsWith(ym));
+    const lumpIncome = (Array.isArray(DB.income) ? DB.income : []).filter(r => r.doctorId && (r.date || "").startsWith(ym));
+    const rows = (DB.doctors || []).filter(d => d.status !== "موقوف").map(d => {
+      const docVisits = visits.filter(v => v.doctorId === d.id);
+      const docLump = lumpIncome.filter(r => r.doctorId === d.id);
+      const labRec = (DB.labExpenses || []).find(x => x.doctorId === d.id && x.month === ym);
+      const labExpense = Number(labRec?.amount) || 0;
+      const breakdown = doctorSettlementBreakdown(d, docVisits, docLump, labExpense);
+      return {
+        doctorId: d.id,
+        name: d.name,
+        specialty: d.specialty || "",
+        type: d.type,
+        count: breakdown.visitCount,
+        rev: breakdown.grossRevenue,
+        grossRevenue: breakdown.grossRevenue,
+        labExpense: breakdown.labExpense,
+        netRevenue: breakdown.netRevenue,
+        doc: breakdown.docShare,
+        docShare: breakdown.docShare,
+        clinic: breakdown.clinicShare,
+        clinicShare: breakdown.clinicShare,
+        mode: breakdown.mode
+      };
+    }).filter(r => r.count > 0 || r.labExpense > 0).sort((a, b) => b.rev - a.rev);
+    const bySpecialty = {};
+    visits.forEach(v => {
+      const d = (DB.doctors || []).find(doc => doc.id === v.doctorId);
+      const spec = d ? (d.specialty || "غير محدد") : "غير محدد";
+      bySpecialty[spec] = (bySpecialty[spec] || 0) + (Number(v.paid) || 0);
+    });
+    const totals = rows.reduce((s, r) => ({
+      gross: s.gross + r.grossRevenue,
+      lab: s.lab + r.labExpense,
+      net: s.net + r.netRevenue,
+      doc: s.doc + r.docShare,
+      clinic: s.clinic + r.clinicShare,
+      count: s.count + r.count
+    }), { gross: 0, lab: 0, net: 0, doc: 0, clinic: 0, count: 0 });
+    const localRes = { doctorMonth: ym, byDoctor: rows, bySpecialty, totals };
+    DOCTOR_REPORTS_CACHE[ym] = { data: localRes, at: Date.now() };
+    return localRes;
+  }
+
+  const promise = (async () => {
+    try {
+      const fetcher = window.MitaliFirebase.getDoctorMonthReport || window.getDoctorMonthReport;
+      if (!fetcher) throw new Error("getDoctorMonthReport not available");
+      const res = await fetcher(ym);
+      if (!res || !Array.isArray(res.byDoctor)) throw new Error("invalid-doctor-report-response");
+      DOCTOR_REPORTS_CACHE[ym] = { data: res, at: Date.now() };
+      delete DOCTOR_REPORTS_ERRORS[ym];
+      return res;
+    } catch (err) {
+      console.warn("getUnifiedDoctorReport failed for", ym, err?.message || err);
+      DOCTOR_REPORTS_ERRORS[ym] = err?.message || "error";
+      throw err;
+    }
+  })();
+
+  DOCTOR_REPORTS_INFLIGHT.set(ym, promise);
+  try {
+    return await promise;
+  } finally {
+    DOCTOR_REPORTS_INFLIGHT.delete(ym);
+  }
+}
+
+function settlementMonthKey() { return state.settlementMonth || (state.payrollMonth !== "all" && state.payrollMonth) || state.payrollMonth || todayISO().slice(0, 7); }
 function exactVisitsPlan(page) {
   if (STORAGE_MODE !== "firestore") return null;
   const id = normalizePageId(page);
@@ -2073,7 +2181,7 @@ async function fetchExactVisitRows(key, scope) {
 async function ensureExactVisits(page) {
   const plan = exactVisitsPlan(page);
   if (!plan || !currentUser || !window.MitaliFirebase) return;
-  await Promise.all(plan.keys.filter(key => !exactEntryFresh(key, plan.scope)).map(key => {
+  const visitLoads = plan.keys.filter(key => !exactEntryFresh(key, plan.scope)).map(key => {
     const id = `${key}|${plan.scope}`;
     if (!EXACT_VISITS_LOADING.has(id)) {
       EXACT_VISITS_LOADING.set(id, fetchExactVisitRows(key, plan.scope)
@@ -2086,7 +2194,11 @@ async function ensureExactVisits(page) {
         .finally(() => EXACT_VISITS_LOADING.delete(id)));
     }
     return EXACT_VISITS_LOADING.get(id);
-  }));
+  });
+  if (page === "payroll" && plan.scope && typeof getUnifiedDoctorReport === "function") {
+    visitLoads.push(getUnifiedDoctorReport(plan.scope).catch(e => console.warn("Prefetch doctor report failed:", e)));
+  }
+  await Promise.all(visitLoads);
 }
 function exactVisitsPlaceholderHTML(plan, title) {
   const failed = plan.keys.some(key => EXACT_VISITS_ERRORS[key]);
@@ -4356,6 +4468,7 @@ function renderVisitsPage(kind) {
     } else {
       saveToast(editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة بنجاح");
     }
+    invalidateDoctorReportsCache(rec.date);
     ACTIVE_UI_SAVES.delete(saveKey);
     route();
     }
@@ -4429,6 +4542,7 @@ function renderVisitsPage(kind) {
       if (idx > -1) list.splice(idx, 1);
       logActivity(isDental ? "حذف حالة أسنان" : "حذف زيارة", kind, removed, null);
       await persist(isDental ? "visitsDental" : "visitsClinic");
+      invalidateDoctorReportsCache(target ? target.date : null);
       showToast("تم الحذف");
     } catch (err) {
       console.error("Visit delete sync failed:", err);
@@ -4662,6 +4776,7 @@ function renderServiceVisitsPage(kind) {
       } else {
         saveToast(editing ? "تم حفظ التعديل" : "تم التسجيل بنجاح");
       }
+      invalidateDoctorReportsCache(rec.date);
       ACTIVE_UI_SAVES.delete(saveKey);
       route();
     }
@@ -4702,6 +4817,7 @@ function renderServiceVisitsPage(kind) {
       if (idx > -1) list.splice(idx, 1);
       logActivity(cfg.deleteAction, kind, removed, null);
       await persist(cfg.listKey);
+      invalidateDoctorReportsCache(target ? target.date : null);
       showToast("تم الحذف");
     } catch (err) {
       console.error("Record delete sync failed:", err);
@@ -5676,6 +5792,7 @@ function renderMoneyPage(kind) {
     } else {
       saveToast(editing ? "تم حفظ التعديل" : "تم التسجيل بنجاح");
     }
+    if (isIncome) invalidateDoctorReportsCache(rec.date);
     route();
     ACTIVE_UI_SAVES.delete(moneySaveKey);
   });
@@ -5721,6 +5838,7 @@ function renderMoneyPage(kind) {
     await persist(isIncome ? "income" : "expense");
     if (removed && !isIncome) { await persist("payroll"); await persist("labExpenses"); }
     if (visitLink) await cascadeDeleteVisitForIncome(visitLink);
+    if (isIncome) invalidateDoctorReportsCache(removed ? removed.date : null);
     showToast("تم الحذف");
     route();
   }));
@@ -6106,9 +6224,10 @@ function doctorSettlementSectionHTML() {
   const ym = settlementMonthKey();
   state.settlementMonth = ym;
   const exactPlan = exactVisitsPlan("payroll");
-  if (exactPlan && !exactVisitsReady(exactPlan)) return exactVisitsPlaceholderHTML(exactPlan, `🧾 تسوية حساب الأطباء — ${monthLabel(ym)}`);
+  const cachedReport = typeof DOCTOR_REPORTS_CACHE !== "undefined" ? DOCTOR_REPORTS_CACHE[ym]?.data : null;
+  if (!cachedReport && exactPlan && !exactVisitsReady(exactPlan)) return exactVisitsPlaceholderHTML(exactPlan, `🧾 تسوية حساب الأطباء — ${monthLabel(ym)}`);
   const allMonthVisits = exactPlan ? exactMonthVisits(ym) : allRevenueVisits().filter(v => (v.date || "").startsWith(ym));
-  const lumpIncome = DB.income.filter(r => r.doctorId && (r.date || "").startsWith(ym));
+  const lumpIncome = (Array.isArray(DB.income) ? DB.income : []).filter(r => r.doctorId && (r.date || "").startsWith(ym));
 
   // إصلاح محاسبي جوهري: هذه الشاشة كانت مبنية بالكامل على معادلة نسبة مئوية
   // (netRevenue * docPct)، بصرف النظر عن نظام احتساب الطبيب الفعلى - فكانت تُظهر
@@ -6118,18 +6237,65 @@ function doctorSettlementSectionHTML() {
   // زيارة (تراعى تلقائيًا أى خصم أو لقطة سعر تاريخية)، ويُخصَم مصروف المعمل (إن
   // وُجد) من نصيب المجمع تحديدًا فى هذه الحالة - باعتباره تكلفة يتحمّلها المجمع لا
   // جزءًا من الاتفاق المُسعَّر مع الطبيب لكل زيارة.
-  const rows = DB.doctors.filter(d => d.status !== "موقوف").map(d => {
-    const mode = doctorTypeUsesPercent(d.type) ? "percent" : (d.feeMode || "fixed_visit");
-    const docVisits = allMonthVisits.filter(v => v.doctorId === d.id);
-    const docLumpIncome = lumpIncome.filter(r => r.doctorId === d.id);
-    const labRec = DB.labExpenses.find(x => x.doctorId === d.id && x.month === ym);
-    const labExpense = Number(labRec?.amount) || 0;
-    const breakdown = doctorSettlementBreakdown(d, docVisits, docLumpIncome, labExpense);
-    const { grossRevenue, labExpense: calculatedLabExpense, netRevenue, docShare, clinicShare, visitCount } = breakdown;
-    return { doctor: d, grossRevenue, labExpense: calculatedLabExpense, netRevenue, docShare, clinicShare, visitCount };
-  }).filter(r => r.visitCount > 0 || r.labExpense > 0);
-
-  const totals = rows.reduce((s, r) => ({ gross: s.gross + r.grossRevenue, lab: s.lab + r.labExpense, net: s.net + r.netRevenue, doc: s.doc + r.docShare, clinic: s.clinic + r.clinicShare }), { gross: 0, lab: 0, net: 0, doc: 0, clinic: 0 });
+  let rows;
+  let totals;
+  if (cachedReport && Array.isArray(cachedReport.byDoctor)) {
+    rows = cachedReport.byDoctor.map(r => {
+      const d = (DB.doctors || []).find(doc => doc.id === r.doctorId) || { id: r.doctorId, name: r.name, specialty: r.specialty, type: r.type, status: "نشط" };
+      const localLab = (DB.labExpenses || []).find(x => x.doctorId === r.doctorId && x.month === ym);
+      const labExpense = localLab ? (Number(localLab.amount) || 0) : (Number(r.labExpense) || 0);
+      const grossRevenue = Number(r.grossRevenue ?? r.rev) || 0;
+      const netRevenue = grossRevenue - labExpense;
+      const docShare = Number(r.docShare ?? r.doc) || 0;
+      const clinicShare = Number(r.clinicShare ?? r.clinic) || (netRevenue - docShare);
+      const visitCount = Number(r.visitCount ?? r.count) || 0;
+      return { doctor: d, grossRevenue, labExpense, netRevenue, docShare, clinicShare, visitCount };
+    });
+    totals = rows.reduce((s, r) => ({ gross: s.gross + r.grossRevenue, lab: s.lab + r.labExpense, net: s.net + r.netRevenue, doc: s.doc + r.docShare, clinic: s.clinic + r.clinicShare }), { gross: 0, lab: 0, net: 0, doc: 0, clinic: 0 });
+  } else {
+    rows = (DB.doctors || []).filter(d => d.status !== "موقوف").map(d => {
+      const mode = doctorTypeUsesPercent(d.type) ? "percent" : (d.feeMode || "fixed_visit");
+      const docVisits = allMonthVisits.filter(v => v.doctorId === d.id);
+      const docLumpIncome = lumpIncome.filter(r => r.doctorId === d.id);
+      const labRec = (DB.labExpenses || []).find(x => x.doctorId === d.id && x.month === ym);
+      const labExpense = Number(labRec?.amount) || 0;
+      const breakdown = doctorSettlementBreakdown(d, docVisits, docLumpIncome, labExpense);
+      const { grossRevenue, labExpense: calculatedLabExpense, netRevenue, docShare, clinicShare, visitCount } = breakdown;
+      return { doctor: d, grossRevenue, labExpense: calculatedLabExpense, netRevenue, docShare, clinicShare, visitCount };
+    }).filter(r => r.visitCount > 0 || r.labExpense > 0);
+    totals = rows.reduce((s, r) => ({ gross: s.gross + r.grossRevenue, lab: s.lab + r.labExpense, net: s.net + r.netRevenue, doc: s.doc + r.docShare, clinic: s.clinic + r.clinicShare }), { gross: 0, lab: 0, net: 0, doc: 0, clinic: 0 });
+    const bySpecialty = {};
+    allMonthVisits.forEach(v => {
+      const d = (DB.doctors || []).find(doc => doc.id === v.doctorId);
+      const spec = d ? (d.specialty || "غير محدد") : "غير محدد";
+      bySpecialty[spec] = (bySpecialty[spec] || 0) + (Number(v.paid) || 0);
+    });
+    if (typeof DOCTOR_REPORTS_CACHE !== "undefined") {
+      DOCTOR_REPORTS_CACHE[ym] = {
+        data: {
+          doctorMonth: ym,
+          byDoctor: rows.map(r => ({
+            doctorId: r.doctor.id,
+            name: r.doctor.name,
+            specialty: r.doctor.specialty || "",
+            type: r.doctor.type,
+            count: r.visitCount,
+            rev: r.grossRevenue,
+            grossRevenue: r.grossRevenue,
+            labExpense: r.labExpense,
+            netRevenue: r.netRevenue,
+            doc: r.docShare,
+            docShare: r.docShare,
+            clinic: r.clinicShare,
+            clinicShare: r.clinicShare
+          })),
+          bySpecialty,
+          totals
+        },
+        at: Date.now()
+      };
+    }
+  }
 
   return `
     <div class="card" style="margin-bottom:16px;">
@@ -6176,7 +6342,11 @@ function bindDoctorSettlementEvents(c) {
   bindExactVisitsRetry(c);
   const ym = state.settlementMonth;
   const monthInput = document.getElementById("settlementMonthInput");
-  if (monthInput) monthInput.addEventListener("change", () => { state.settlementMonth = monthInput.value; route(); });
+  if (monthInput) monthInput.addEventListener("change", () => {
+    state.settlementMonth = monthInput.value;
+    getUnifiedDoctorReport(state.settlementMonth).catch(() => {});
+    route();
+  });
 
   c.querySelectorAll("[data-save-lab]").forEach(btn => btn.addEventListener("click", async () => {
     const doctorId = btn.dataset.saveLab;
@@ -6194,6 +6364,7 @@ function bindDoctorSettlementEvents(c) {
     logActivity("تسجيل مصروف معمل", "payroll", null, { doctorId, month: ym, amount });
     await syncLabExpenseTreasuryLink(rec, doctor ? doctor.name : "طبيب");
     await persist("labExpenses");
+    invalidateDoctorReportsCache(ym);
     saveToast("تم حفظ مصروف المعمل وتسجيله فى دفتر الخزينة");
     route();
   }));
@@ -6233,6 +6404,24 @@ async function loadReportsDataIfNeeded() {
     if (!fetcher) throw new Error("getReportsData is not available");
     const data = await fetcher({ range, closingMonth, annualYear, doctorMonth, includeAnnual });
     REPORTS_CACHE[paramKey] = data;
+    if (data && Array.isArray(data.byDoctor) && doctorMonth) {
+      DOCTOR_REPORTS_CACHE[doctorMonth] = {
+        data: {
+          doctorMonth,
+          byDoctor: data.byDoctor,
+          bySpecialty: data.bySpecialty || {},
+          totals: data.totals || {
+            gross: data.byDoctor.reduce((s, r) => s + (Number(r.grossRevenue ?? r.rev) || 0), 0),
+            lab: data.byDoctor.reduce((s, r) => s + (Number(r.labExpense) || 0), 0),
+            net: data.byDoctor.reduce((s, r) => s + (Number(r.netRevenue) || 0), 0),
+            doc: data.byDoctor.reduce((s, r) => s + (Number(r.docShare ?? r.doc) || 0), 0),
+            clinic: data.byDoctor.reduce((s, r) => s + (Number(r.clinicShare ?? r.clinic) || 0), 0),
+            count: data.byDoctor.reduce((s, r) => s + (Number(r.count) || 0), 0)
+          }
+        },
+        at: Date.now()
+      };
+    }
     REPORTS_API_DATA = data;
     REPORTS_LAST_PARAMS = paramKey;
     REPORTS_API_LOADING = false;
@@ -6397,8 +6586,9 @@ function renderReports() {
   }
 
   const reportsData = REPORTS_API_DATA;
-  let byDoctor = reportsData.byDoctor || [];
-  let bySpecialty = reportsData.bySpecialty || {};
+  const cachedDocData = DOCTOR_REPORTS_CACHE[state.doctorMonth]?.data;
+  let byDoctor = cachedDocData?.byDoctor || reportsData.byDoctor || [];
+  let bySpecialty = cachedDocData?.bySpecialty || reportsData.bySpecialty || {};
   const closing = reportsData.closing || {
     ym: closingMonth,
     visitCount: 0,
@@ -6584,15 +6774,7 @@ function renderReports() {
     if (specWrap) specWrap.innerHTML = `<div style="text-align:center; padding:25px 10px;" class="hint">⏳ جارٍ جلب تقرير التخصصات لشهر ${mName} ${y}...</div>`;
 
     try {
-      const fetcher = (window.MitaliFirebase && window.MitaliFirebase.getReportsData);
-      if (!fetcher) throw new Error("getReportsData is not available");
-      const res = await fetcher({
-        range: state.reportMonthsRange || 6,
-        closingMonth: state.closingMonth || todayISO().slice(0, 7),
-        annualYear: state.annualReportYear || String(new Date().getFullYear()),
-        doctorMonth: state.doctorMonth,
-        includeAnnual: "0"
-      });
+      const res = await getUnifiedDoctorReport(state.doctorMonth);
 
       if (res) {
         byDoctor = res.byDoctor || [];
@@ -6601,8 +6783,6 @@ function renderReports() {
           REPORTS_API_DATA.byDoctor = byDoctor;
           REPORTS_API_DATA.bySpecialty = bySpecialty;
         }
-        const cacheKey = `${state.reportMonthsRange || 6}|${state.closingMonth || todayISO().slice(0, 7)}|${state.annualReportYear || String(new Date().getFullYear())}|${state.doctorMonth}|0`;
-        REPORTS_CACHE[cacheKey] = res;
       }
 
       if (docWrap) docWrap.innerHTML = renderDoctorTable(byDoctor);
@@ -7289,6 +7469,7 @@ function renderSettings() {
       logActivity("إضافة طبيب", "settings", null, newDoc);
       saveToast("تمت إضافة الطبيب");
     }
+    invalidateDoctorReportsCache();
     route();
     persistAfterPaint("doctors", "بيانات الطبيب");
   });
@@ -7383,6 +7564,7 @@ function renderSettings() {
     const before = d.status;
     d.status = d.status === "نشط" ? "موقوف" : "نشط";
     logActivity("تغيير حالة طبيب", "settings", before, d.status);
+    invalidateDoctorReportsCache();
     persist("doctors"); route();
   }));
   c.querySelectorAll("[data-deldoc]").forEach(b => b.addEventListener("click", async () => {
@@ -7408,6 +7590,7 @@ function renderSettings() {
     if (removed) await markSyncTombstone("doctors", removed.id);
     if (idx > -1) DB.doctors.splice(idx, 1);
     logActivity("حذف طبيب", "settings", removed, null);
+    invalidateDoctorReportsCache();
     await persist("doctors"); showToast("تم الحذف"); route();
   }));
   c.querySelectorAll("[data-editdoc]").forEach(b => b.addEventListener("click", () => {

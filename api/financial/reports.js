@@ -204,6 +204,101 @@ function patientKey(v) {
   return 'N:' + (v.patient || '').trim().toLowerCase() + '|' + (v.phone || '').trim();
 }
 
+async function computeDoctorReports(db, targetDoctorMonth) {
+  const [docYear, docMonthStr] = targetDoctorMonth.split('-');
+  const docLastDay = new Date(Date.UTC(Number(docYear), Number(docMonthStr), 0)).getUTCDate();
+  const docStartDate = `${targetDoctorMonth}-01`;
+  const docEndDate = `${targetDoctorMonth}-${String(docLastDay).padStart(2, '0')}`;
+
+  const [doctorsSnap, doctorVisitSnaps, doctorIncomeSnap, doctorLabSnap] = await Promise.all([
+    db.collection('doctors').get(),
+    Promise.all(
+      VISIT_COLLECTIONS.map(c =>
+        db.collection(c.name)
+          .where('date', '>=', docStartDate)
+          .where('date', '<=', docEndDate)
+          .select('date', 'paid', 'doctorId', 'examType', 'clinicFeeSnapshot')
+          .get()
+      )
+    ),
+    db.collection('income')
+      .where('date', '>=', docStartDate)
+      .where('date', '<=', docEndDate)
+      .get(),
+    db.collection('lab_expenses')
+      .where('month', '==', targetDoctorMonth)
+      .get()
+      .catch(() => ({ docs: [] })),
+  ]);
+
+  const doctors = doctorsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const doctorsMap = new Map(doctors.map(d => [d.id, d]));
+
+  const doctorVisits = [];
+  VISIT_COLLECTIONS.forEach((c, idx) => {
+    doctorVisitSnaps[idx].docs.forEach(d => {
+      doctorVisits.push({ id: d.id, ...d.data(), kind: c.kind, kindKey: c.kindKey });
+    });
+  });
+
+  const doctorIncomeRows = doctorIncomeSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const doctorLumpIncome = doctorIncomeRows.filter(r => r.doctorId);
+  const doctorLabs = doctorLabSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+  const byDoctor = doctors.map(d => {
+    const dv = doctorVisits.filter(v => v.doctorId === d.id);
+    const di = doctorLumpIncome.filter(r => r.doctorId === d.id);
+    const dl = doctorLabs.filter(x => x.doctorId === d.id);
+    const breakdown = doctorSettlementBreakdown(d, dv, di, dl.reduce((s, x) => s + (Number(x.amount) || 0), 0));
+    return {
+      doctorId: d.id,
+      name: d.name,
+      specialty: d.specialty || '',
+      type: d.type,
+      count: breakdown.visitCount,
+      rev: breakdown.grossRevenue,
+      grossRevenue: breakdown.grossRevenue,
+      labExpense: breakdown.labExpense,
+      netRevenue: breakdown.netRevenue,
+      doc: breakdown.docShare,
+      docShare: breakdown.docShare,
+      clinic: breakdown.clinicShare,
+      clinicShare: breakdown.clinicShare,
+      mode: breakdown.mode
+    };
+  }).filter(r => r.count > 0 || r.labExpense > 0).sort((a, b) => b.rev - a.rev);
+
+  const bySpecialty = {};
+  doctorVisits.forEach(v => {
+    const d = doctorsMap.get(v.doctorId);
+    const spec = d ? (d.specialty || 'غير محدد') : 'غير محدد';
+    bySpecialty[spec] = (bySpecialty[spec] || 0) + (Number(v.paid) || 0);
+  });
+
+  const totals = byDoctor.reduce((s, r) => ({
+    gross: s.gross + r.grossRevenue,
+    lab: s.lab + r.labExpense,
+    net: s.net + r.netRevenue,
+    doc: s.doc + r.docShare,
+    clinic: s.clinic + r.clinicShare,
+    count: s.count + r.count
+  }), { gross: 0, lab: 0, net: 0, doc: 0, clinic: 0, count: 0 });
+
+  return {
+    doctorMonth: targetDoctorMonth,
+    byDoctor,
+    bySpecialty,
+    totals,
+    _raw: {
+      doctors,
+      doctorsMap,
+      doctorVisits,
+      doctorIncomeRows,
+      doctorLabs
+    }
+  };
+}
+
 async function computeReports(db, { range, closingMonth, annualYear, doctorMonth, includeAnnual }) {
   const now = new Date();
   const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -214,78 +309,35 @@ async function computeReports(db, { range, closingMonth, annualYear, doctorMonth
 
   const Agg = getAggregateField(db);
 
-  // 1. Fetch reference collections: doctors, settings
-  const [doctorsSnap, settingsDoc] = await Promise.all([
-    db.collection('doctors').get(),
-    db.collection('settings').doc('app').get(),
-  ]);
-  const doctors = doctorsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  const doctorsMap = new Map(doctors.map(d => [d.id, d]));
+  // 1. Fetch settings (opening balance)
+  const settingsDoc = await db.collection('settings').doc('app').get();
   const openingBalance = Number(settingsDoc.exists ? settingsDoc.data().openingBalance : 0) || 0;
 
-  // 2. Fetch visits ONLY for targetDoctorMonth (strictly scoped to this month to minimize reads)
-  const [docYear, docMonthStr] = targetDoctorMonth.split('-');
-  const docLastDay = new Date(Date.UTC(Number(docYear), Number(docMonthStr), 0)).getUTCDate();
-  const docStartDate = `${targetDoctorMonth}-01`;
-  const docEndDate = `${targetDoctorMonth}-${String(docLastDay).padStart(2, '0')}`;
-
-  const doctorVisitSnaps = await Promise.all(
-    VISIT_COLLECTIONS.map(c =>
-      db.collection(c.name)
-        .where('date', '>=', docStartDate)
-        .where('date', '<=', docEndDate)
-        .select('date', 'paid', 'doctorId', 'examType', 'clinicFeeSnapshot')
-        .get()
-    )
-  );
-  const doctorVisits = [];
-  VISIT_COLLECTIONS.forEach((c, idx) => {
-    doctorVisitSnaps[idx].docs.forEach(d => {
-      doctorVisits.push({ id: d.id, ...d.data(), kind: c.kind, kindKey: c.kindKey });
+  // 2. Compute doctor reports for targetDoctorMonth
+  const docCacheKey = `scope:doctors:${targetDoctorMonth}`;
+  let docReports;
+  const cachedDoc = REPORTS_SERVER_CACHE.get(docCacheKey);
+  if (cachedDoc && (Date.now() - cachedDoc.timestamp < REPORTS_CACHE_TTL_MS) && cachedDoc.raw) {
+    docReports = cachedDoc.raw;
+  } else {
+    docReports = await computeDoctorReports(db, targetDoctorMonth);
+    REPORTS_SERVER_CACHE.set(docCacheKey, {
+      timestamp: Date.now(),
+      data: {
+        doctorMonth: docReports.doctorMonth,
+        byDoctor: docReports.byDoctor,
+        bySpecialty: docReports.bySpecialty,
+        totals: docReports.totals
+      },
+      raw: docReports
     });
-  });
+  }
+  const byDoctor = docReports.byDoctor;
+  const bySpecialty = docReports.bySpecialty;
+  const doctors = docReports._raw.doctors;
+  const doctorsMap = docReports._raw.doctorsMap;
 
-  // Doctor lump income and lab expenses for targetDoctorMonth
-  const [doctorIncomeSnap, doctorLabSnap] = await Promise.all([
-    db.collection('income')
-      .where('date', '>=', docStartDate)
-      .where('date', '<=', docEndDate)
-      .get(),
-    db.collection('lab_expenses')
-      .where('month', '==', targetDoctorMonth)
-      .get()
-      .catch(() => ({ docs: [] })),
-  ]);
-  const doctorLumpIncome = doctorIncomeSnap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter(r => r.doctorId);
-  const doctorLabs = doctorLabSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-  // 3. Report by doctor (scoped to targetDoctorMonth only)
-  const byDoctor = doctors.map(d => {
-    const dv = doctorVisits.filter(v => v.doctorId === d.id);
-    const di = doctorLumpIncome.filter(r => r.doctorId === d.id);
-    const dl = doctorLabs.filter(x => x.doctorId === d.id);
-    const breakdown = doctorSettlementBreakdown(d, dv, di, dl.reduce((s, x) => s + (Number(x.amount) || 0), 0));
-    return {
-      name: d.name,
-      type: d.type,
-      count: breakdown.visitCount,
-      rev: breakdown.grossRevenue,
-      doc: breakdown.docShare,
-      clinic: breakdown.clinicShare
-    };
-  }).filter(r => r.count > 0).sort((a, b) => b.rev - a.rev);
-
-  // 4. Report by specialty (scoped to targetDoctorMonth only)
-  const bySpecialty = {};
-  doctorVisits.forEach(v => {
-    const d = doctorsMap.get(v.doctorId);
-    const spec = d ? (d.specialty || 'غير محدد') : 'غير محدد';
-    bySpecialty[spec] = (bySpecialty[spec] || 0) + (Number(v.paid) || 0);
-  });
-
-  // 5. Closing Month Data (targetClosingMonth)
+  // 3. Closing Month Data (targetClosingMonth)
   const [closeYear, closeMonthStr] = targetClosingMonth.split('-');
   const closeLastDay = new Date(Date.UTC(Number(closeYear), Number(closeMonthStr), 0)).getUTCDate();
   const closeStartDate = `${targetClosingMonth}-01`;
@@ -296,9 +348,9 @@ async function computeReports(db, { range, closingMonth, annualYear, doctorMonth
   let closingLabRows;
 
   if (targetClosingMonth === targetDoctorMonth) {
-    closingVisits = doctorVisits;
-    closingIncomeRows = doctorIncomeSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    closingLabRows = doctorLabs;
+    closingVisits = docReports._raw.doctorVisits;
+    closingIncomeRows = docReports._raw.doctorIncomeRows;
+    closingLabRows = docReports._raw.doctorLabs;
   } else {
     const [cVisitsSnaps, cIncSnap, cLabSnap] = await Promise.all([
       Promise.all(
@@ -523,11 +575,38 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' });
 
+  const scope = String(req.query.scope || '');
   const range = String(req.query.range || '6');
   const closingMonth = String(req.query.closingMonth || '');
   const annualYear = String(req.query.annualYear || '');
   const doctorMonth = String(req.query.doctorMonth || req.query.month || '');
   const includeAnnual = req.query.includeAnnual != null ? String(req.query.includeAnnual) : undefined;
+
+  if (scope === 'doctors') {
+    const now = new Date();
+    const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const targetDoctorMonth = /^\d{4}-\d{2}$/.test(doctorMonth) ? doctorMonth : currentYM;
+    const cacheKey = `scope:doctors:${targetDoctorMonth}`;
+
+    const cached = REPORTS_SERVER_CACHE.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < REPORTS_CACHE_TTL_MS) {
+      return json(res, 200, cached.data);
+    }
+
+    try {
+      const api = adminLib.getAdmin();
+      await requireActiveUser(req, api);
+
+      const data = await computeDoctorReports(api.firestore(), targetDoctorMonth);
+      const rawData = Object.assign({}, data);
+      delete data._raw;
+      REPORTS_SERVER_CACHE.set(cacheKey, { timestamp: Date.now(), data, raw: rawData });
+      return json(res, 200, data);
+    } catch (error) {
+      return handleReportError(res, error);
+    }
+  }
+
   const cacheKey = `${range}|${closingMonth}|${annualYear}|${doctorMonth}|${includeAnnual}`;
 
   const cached = REPORTS_SERVER_CACHE.get(cacheKey);
@@ -543,39 +622,44 @@ module.exports = async function handler(req, res) {
     REPORTS_SERVER_CACHE.set(cacheKey, { timestamp: Date.now(), data });
     return json(res, 200, data);
   } catch (error) {
-    const rawCode = String(error && error.code != null ? error.code : '');
-    const rawMessage = String(error && error.message || '');
-    const isResourceExhausted =
-      rawCode === '8' ||
-      rawCode.includes('RESOURCE_EXHAUSTED') ||
-      rawMessage.includes('RESOURCE_EXHAUSTED') ||
-      rawMessage.includes('Quota exceeded');
-
-    if (isResourceExhausted) {
-      console.warn('financial-reports: firestore-resource-exhausted');
-      return json(res, 503, {
-        error: 'firestore-resource-exhausted',
-        retryable: true
-      });
-    }
-
-    const isMisconfigured =
-      rawCode === 'server-misconfigured' ||
-      rawCode === 'app/invalid-credential' ||
-      rawCode === '7' ||
-      rawCode.includes('permission-denied') ||
-      rawMessage.includes('credentials are not configured') ||
-      rawMessage.includes('PERMISSION_DENIED') ||
-      rawMessage.includes('Missing or insufficient permissions');
-
-    const status = Number(error && error.status) || (isMisconfigured ? 503 : 500);
-    if (!isMisconfigured) {
-      console.error('financial-reports-error', String(error && error.code || error && error.message || 'unknown').slice(0, 180));
-    }
-    return json(res, status, {
-      error: isMisconfigured ? 'server-misconfigured' : (status >= 500 ? 'financial-reports-failed' : String(error.message || 'request-failed'))
-    });
+    return handleReportError(res, error);
   }
 };
 
+function handleReportError(res, error) {
+  const rawCode = String(error && error.code != null ? error.code : '');
+  const rawMessage = String(error && error.message || '');
+  const isResourceExhausted =
+    rawCode === '8' ||
+    rawCode.includes('RESOURCE_EXHAUSTED') ||
+    rawMessage.includes('RESOURCE_EXHAUSTED') ||
+    rawMessage.includes('Quota exceeded');
+
+  if (isResourceExhausted) {
+    console.warn('financial-reports: firestore-resource-exhausted');
+    return json(res, 503, {
+      error: 'firestore-resource-exhausted',
+      retryable: true
+    });
+  }
+
+  const isMisconfigured =
+    rawCode === 'server-misconfigured' ||
+    rawCode === 'app/invalid-credential' ||
+    rawCode === '7' ||
+    rawCode.includes('permission-denied') ||
+    rawMessage.includes('credentials are not configured') ||
+    rawMessage.includes('PERMISSION_DENIED') ||
+    rawMessage.includes('Missing or insufficient permissions');
+
+  const status = Number(error && error.status) || (isMisconfigured ? 503 : 500);
+  if (!isMisconfigured) {
+    console.error('financial-reports-error', String(error && error.code || error && error.message || 'unknown').slice(0, 180));
+  }
+  return json(res, status, {
+    error: isMisconfigured ? 'server-misconfigured' : (status >= 500 ? 'financial-reports-failed' : String(error.message || 'request-failed'))
+  });
+}
+
 module.exports.computeReports = computeReports;
+module.exports.computeDoctorReports = computeDoctorReports;

@@ -273,6 +273,7 @@
       doctorMonth: String(options.doctorMonth || ""),
       includeAnnual: String(options.includeAnnual ?? "")
     });
+    if (options.scope) params.set("scope", String(options.scope));
 
     const response = await fetchWithTimeout(
       apiUrl(`/api/financial/reports?${params.toString()}`),
@@ -292,6 +293,38 @@
       throw new Error(body.error || "financial-reports-failed");
     }
 
+    return body;
+  }
+
+  async function getDoctorMonthReport(month) {
+    init();
+    if (!auth || !auth.currentUser) {
+      throw new Error("Firebase user is not authenticated");
+    }
+    const ym = String(month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+      throw new Error("Valid month (YYYY-MM) is required for getDoctorMonthReport");
+    }
+    const token = await auth.currentUser.getIdToken();
+    const params = new URLSearchParams({
+      scope: "doctors",
+      doctorMonth: ym
+    });
+    const response = await fetchWithTimeout(
+      apiUrl(`/api/financial/reports?${params.toString()}`),
+      {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-store",
+          "Authorization": `Bearer ${token}`
+        }
+      },
+      15000
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body.error || "financial-reports-failed");
+    }
     return body;
   }
 
@@ -800,6 +833,7 @@
 
   window.searchPatientIndex = searchPatientIndex;
   window.savePatientToIndex = savePatientToIndex;
+  window.getDoctorMonthReport = getDoctorMonthReport;
 
   window.MitaliFirebase = Object.freeze({
     config: Object.freeze({ projectId: firebaseConfig.projectId }),
@@ -828,6 +862,7 @@
     adminAccountRequest,
     getFinancialSummary,
     getReportsData,
+    getDoctorMonthReport,
     getMonthRecords,
     adminCreateAccount,
     configureManagerRecovery,
