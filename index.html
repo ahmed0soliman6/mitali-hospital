@@ -2005,6 +2005,8 @@ async function cascadeDeleteVisitForIncome(link) {
   await persist(key);
   // لقطة الصفحة المخزنة لم تعد صالحة: تُقرأ من جديد عند فتح اليومية.
   if (STORAGE_MODE === "firestore") getFirestorePageState(key).pages = {};
+  const deletedMonth = (removed?.date || '').slice(0, 7);
+  if (deletedMonth) invalidateDoctorReportsCache(deletedMonth);
 }
 // ======================================================================
 // زيارات "كاملة" للصفحات التي تُحسب منها مبالغ مالية (المستحقات + تسوية الأطباء)
@@ -4388,6 +4390,7 @@ function renderVisitsPage(kind) {
       ACTIVE_UI_SAVES.delete(saveKey);
     }
     async function runVisitSave() {
+    const oldMonth = (editing?.date || '').slice(0, 7);
     const fd = new FormData(e.target);
     const total = Number(fd.get("total")) || 0;
     const rec = {
@@ -4468,7 +4471,11 @@ function renderVisitsPage(kind) {
     } else {
       saveToast(editing ? "تم حفظ التعديل" : "تم تسجيل الزيارة بنجاح");
     }
-    invalidateDoctorReportsCache(rec.date);
+    const newMonth = (rec?.date || '').slice(0, 7);
+    invalidateDoctorReportsCache(newMonth);
+    if (oldMonth && oldMonth !== newMonth) {
+      invalidateDoctorReportsCache(oldMonth);
+    }
     ACTIVE_UI_SAVES.delete(saveKey);
     route();
     }
@@ -4542,7 +4549,8 @@ function renderVisitsPage(kind) {
       if (idx > -1) list.splice(idx, 1);
       logActivity(isDental ? "حذف حالة أسنان" : "حذف زيارة", kind, removed, null);
       await persist(isDental ? "visitsDental" : "visitsClinic");
-      invalidateDoctorReportsCache(target ? target.date : null);
+      const deletedMonth = (target?.date || removed?.date || '').slice(0, 7);
+      if (deletedMonth) invalidateDoctorReportsCache(deletedMonth);
       showToast("تم الحذف");
     } catch (err) {
       console.error("Visit delete sync failed:", err);
@@ -4730,6 +4738,7 @@ function renderServiceVisitsPage(kind) {
       ACTIVE_UI_SAVES.delete(saveKey);
     }
     async function runServiceSave() {
+      const oldMonth = (editing?.date || '').slice(0, 7);
       const fd = new FormData(e.target);
       const total = Number(fd.get("total")) || 0;
       const paid = Number(fd.get("paid")) || 0;
@@ -4776,7 +4785,11 @@ function renderServiceVisitsPage(kind) {
       } else {
         saveToast(editing ? "تم حفظ التعديل" : "تم التسجيل بنجاح");
       }
-      invalidateDoctorReportsCache(rec.date);
+      const newMonth = (rec?.date || '').slice(0, 7);
+      invalidateDoctorReportsCache(newMonth);
+      if (oldMonth && oldMonth !== newMonth) {
+        invalidateDoctorReportsCache(oldMonth);
+      }
       ACTIVE_UI_SAVES.delete(saveKey);
       route();
     }
@@ -4817,7 +4830,8 @@ function renderServiceVisitsPage(kind) {
       if (idx > -1) list.splice(idx, 1);
       logActivity(cfg.deleteAction, kind, removed, null);
       await persist(cfg.listKey);
-      invalidateDoctorReportsCache(target ? target.date : null);
+      const deletedMonth = (target?.date || removed?.date || '').slice(0, 7);
+      if (deletedMonth) invalidateDoctorReportsCache(deletedMonth);
       showToast("تم الحذف");
     } catch (err) {
       console.error("Record delete sync failed:", err);

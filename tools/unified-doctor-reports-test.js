@@ -33,7 +33,8 @@ async function runTests() {
   assert.ok(store.includes('window.getDoctorMonthReport = getDoctorMonthReport;'), 'window.getDoctorMonthReport must be exported');
 
   // E: Invalidation called at mutations
-  assert.ok(index.includes('invalidateDoctorReportsCache(rec.date);'), 'must invalidate on visit/income save');
+  assert.ok(index.includes('invalidateDoctorReportsCache(newMonth);'), 'must invalidate on visit save');
+  assert.ok(index.includes('if (oldMonth && oldMonth !== newMonth)'), 'must invalidate old month if date changed');
   assert.ok(index.includes('invalidateDoctorReportsCache(ym);'), 'must invalidate on lab expense save');
 
   // 2. Unit Testing in Sandbox
@@ -114,6 +115,20 @@ async function runTests() {
 
   const res4 = await sandbox.getUnifiedDoctorReport('2026-09');
   assert.strictEqual(cloudCallCount, 2, 'subsequent call after invalidation refetches fresh data');
+
+  // Test 2C: Cross-month date modification invalidates both oldMonth and newMonth
+  sandbox.DOCTOR_REPORTS_CACHE['2026-08'] = { data: { totals: { gross: 100 } }, at: Date.now() };
+  sandbox.DOCTOR_REPORTS_CACHE['2026-09'] = { data: { totals: { gross: 200 } }, at: Date.now() };
+  const oldVisit = { date: '2026-08-15' };
+  const updatedVisit = { date: '2026-09-20' };
+  const oldM = (oldVisit?.date || '').slice(0, 7);
+  const newM = (updatedVisit?.date || '').slice(0, 7);
+  sandbox.invalidateDoctorReportsCache(newM);
+  if (oldM && oldM !== newM) {
+    sandbox.invalidateDoctorReportsCache(oldM);
+  }
+  assert.strictEqual(sandbox.DOCTOR_REPORTS_CACHE['2026-08'], undefined, 'old month cache must be invalidated when date changed');
+  assert.strictEqual(sandbox.DOCTOR_REPORTS_CACHE['2026-09'], undefined, 'new month cache must be invalidated');
 
   // 3. API Isolation Test: scope=doctors does not touch expense, payroll, or settings
   const collectionsAccessed = [];
