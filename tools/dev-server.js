@@ -15,11 +15,13 @@ const accountHandler = require('../api/admin/account');
 const dataHandler = require('../api/admin/data');
 const profileHandler = require('../api/auth/profile');
 const summaryHandler = require('../api/financial/summary');
+const reportsHandler = require('../api/financial/reports');
 
 app.all('/api/admin/account', (req, res) => accountHandler(req, res));
 app.all('/api/admin/data', (req, res) => dataHandler(req, res));
 app.all('/api/auth/profile', (req, res) => profileHandler(req, res));
 app.all('/api/financial/summary', (req, res) => summaryHandler(req, res));
+app.all('/api/financial/reports', (req, res) => reportsHandler(req, res));
 
 // Static files
 app.use(express.static(projectRoot, {

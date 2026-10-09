@@ -258,6 +258,43 @@
     };
   }
 
+  async function getReportsData(options = {}) {
+    init();
+    if (!auth || !auth.currentUser) {
+      throw new Error("Firebase user is not authenticated");
+    }
+
+    const token = await auth.currentUser.getIdToken();
+
+    const params = new URLSearchParams({
+      range: String(options.range || 6),
+      closingMonth: String(options.closingMonth || ""),
+      annualYear: String(options.annualYear || ""),
+      doctorMonth: String(options.doctorMonth || ""),
+      includeAnnual: String(options.includeAnnual ?? "")
+    });
+
+    const response = await fetchWithTimeout(
+      apiUrl(`/api/financial/reports?${params.toString()}`),
+      {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-store",
+          "Authorization": `Bearer ${token}`
+        }
+      },
+      15000
+    );
+
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(body.error || "financial-reports-failed");
+    }
+
+    return body;
+  }
+
   async function getMonthRecords(key, month) {
     init();
     if (!auth || !auth.currentUser) throw new Error("Firebase user is not authenticated");
@@ -555,7 +592,7 @@
     if (!record || !record.id) throw new Error(`Firestore record has no id: ${key}`);
     const data = safeRecord(key, record);
     delete data.id;
-    await db.collection(collectionName(key)).doc(String(record.id)).set(data, { merge: false });
+    await db.collection(collectionName(key)).doc(String(record.id)).set(data, { merge: true });
     return record;
   }
 
@@ -692,6 +729,14 @@
           recordReadMetric(collectionName, snap.docs.length);
           return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
         }
+
+        try {
+          const directDoc = await ref.doc(term).get();
+          if (directDoc.exists) {
+            recordReadMetric(collectionName, 1);
+            return [{ id: directDoc.id, ...(typeof directDoc.data === "function" ? directDoc.data() : directDoc.data()) }];
+          }
+        } catch (e) {}
       }
 
       // الهاتف
@@ -701,8 +746,10 @@
           .limit(30)
           .get();
 
-        recordReadMetric(collectionName, snap.docs.length);
-        return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
+        if (!snap.empty) {
+          recordReadMetric(collectionName, snap.docs.length);
+          return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
+        }
       }
 
       // الاسم: يبدأ بما كتبه المستخدم
@@ -723,7 +770,36 @@
     }
   }
 
+  async function savePatientToIndex(visit, isDental = false) {
+    await ready();
+    if (!visit) return null;
+    const name = String(visit.patient || visit.name || "").trim();
+    const phone = String(visit.phone || "").trim();
+    const fileNo = String(visit.fileNo || "").trim();
+    if (!name && !phone && !fileNo) return null;
+
+    const targetCollection = isDental ? "patient_file_index_dental" : "patient_file_index_clinic";
+    const docId = (fileNo ? String(fileNo) : (phone ? `${name}_${phone}` : name))
+      .replace(/[\/\s#?]+/g, "_").slice(0, 100);
+
+    const docData = {
+      name,
+      phone,
+      fileNo,
+      updatedAt: new Date().toISOString()
+    };
+
+    try {
+      await db.collection(targetCollection).doc(docId).set(docData, { merge: true });
+      return { id: docId, ...docData };
+    } catch (err) {
+      console.warn(`savePatientToIndex failed for ${targetCollection}:`, err?.message || err);
+      return null;
+    }
+  }
+
   window.searchPatientIndex = searchPatientIndex;
+  window.savePatientToIndex = savePatientToIndex;
 
   window.MitaliFirebase = Object.freeze({
     config: Object.freeze({ projectId: firebaseConfig.projectId }),
@@ -734,6 +810,7 @@
     getPage,
     getPatientIndexPage,
     searchPatientIndex,
+    savePatientToIndex,
     setTable,
     getValue,
     getReadMetrics,
@@ -750,6 +827,7 @@
     changePassword,
     adminAccountRequest,
     getFinancialSummary,
+    getReportsData,
     getMonthRecords,
     adminCreateAccount,
     configureManagerRecovery,

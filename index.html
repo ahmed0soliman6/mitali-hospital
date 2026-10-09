@@ -17,7 +17,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script>window.MITALI_API_BASE = window.location.protocol === "file:" ? "https://mitali1.vercel.app" : "";</script>
-<script src="./firebase-store.js?v=1.3.51"></script>
+<script src="./firebase-store.js?v=1.3.54"></script>
 <style>
   :root{
     --navy:#173B4A;
@@ -1644,7 +1644,7 @@ const PAGE_DATA_KEYS = {
   operations: ["doctors", "visitsOperations"], labs: ["doctors", "visitsLabs", "labExpenses"],
   radiology: ["doctors", "visitsRadiology"], income: ["income"], expense: ["expense"],
   ledger: ["income", "expense", "settings"], payroll: ["employees", "doctors", "payroll", "labExpenses", ...REVENUE_VISIT_DB_KEYS, "income"],
-  reports: ["doctors", "employees", "visitsClinic", "visitsDental", "visitsOperations", "visitsLabs", "visitsRadiology", "income", "expense", "payroll"],
+  reports: [],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   users: [], permissions: [], auditlog: ["auditLog"],
   patientFilesClinic: ["doctors", "visitsClinic"], patientFilesDental: ["doctors", "visitsDental"],
@@ -1798,15 +1798,6 @@ async function preloadFinancialSummaries(page) {
   if (page === "ledger") {
     const lm = state.ledgerMonth || todayISO().slice(0, 7);
     if (lm !== "all") months.add(lm);
-  }
-  if (page === "reports") months.add(state.closingMonth || todayISO().slice(0, 7));
-  if (page === "reports") {
-    const count = state.reportMonthsRange === "all" ? 24 : (Number(state.reportMonthsRange) || 6);
-    const now = new Date();
-    for (let i = 0; i < count; i++) {
-      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.add(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
-    }
   }
   await Promise.all([...months].map(month => getFinancialSummary(month, { force: true })));
 }
@@ -3028,7 +3019,7 @@ const PAGE_TITLES = {
   outstandingBalancesOperations: "مستحقات العمليات", outstandingBalancesLabs: "مستحقات التحاليل", outstandingBalancesRadiology: "مستحقات الأشعة",
 };
 
-let state = { page: "dashboard", pageHistory: [], lastRoutedPage: null, skipPageHistory: false, editId: null, editDocId: null, editUserId: null, editEmpId: null, dashboardPeriod: "today", dashboardDoctor: "", patientSearch: "", patientSearchOpen: false, selectedPatientKey: null, closingMonth: null, ledgerSearch: "", ledgerReceipt: null, incomeMonth: null, expenseMonth: null, ledgerMonth: null, payrollMonth: null, tablePage: {} };
+let state = { page: "dashboard", pageHistory: [], lastRoutedPage: null, skipPageHistory: false, editId: null, editDocId: null, editUserId: null, editEmpId: null, dashboardPeriod: "today", dashboardDoctor: "", patientSearch: "", patientSearchOpen: false, selectedPatientKey: null, closingMonth: null, doctorMonth: todayISO().slice(0, 7), ledgerSearch: "", ledgerReceipt: null, incomeMonth: null, expenseMonth: null, ledgerMonth: null, payrollMonth: null, tablePage: {} };
 const PAGE_KEY = APP_PREFIX + "current_page";
 function saveCurrentPage(page) {
   try { localStorage.setItem(PAGE_KEY, page); } catch (e) { /* ignore */ }
@@ -4038,6 +4029,67 @@ function renderDashboard() {
 }
 
 console.log("Dashboard layer ready.");
+// مزامنة مستند المريض مع فهرس المرضى السحابي (patient_file_index_clinic / patient_file_index_dental)
+async function syncPatientIndexRecord(rec, kindKey) {
+  const patientName = String(rec?.patient || "").trim();
+  const phone = String(rec?.phone || "").trim();
+  const fileNo = String(rec?.fileNo || "").trim();
+  if (!patientName && !phone && !fileNo) return;
+
+  const isDental = kindKey === "dental" || kindKey === "visitsDental";
+  const indexColl = isDental ? "patient_file_index_dental" : "patient_file_index_clinic";
+  const pageKey = isDental ? "patientFilesDental" : "patientFilesClinic";
+
+  // معرّف المستند: إما رقم الملف fileNo أو تركيبة فريدة من الاسم والهاتف
+  const docId = (fileNo ? String(fileNo) : (phone ? `${patientName}_${phone}` : patientName))
+    .replace(/[\/\s#?]+/g, "_").slice(0, 100);
+
+  const docData = {
+    id: docId,
+    name: patientName,
+    phone: phone,
+    fileNo: fileNo,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    if (window.MitaliFirebase && typeof window.MitaliFirebase.savePatientToIndex === "function") {
+      await window.MitaliFirebase.savePatientToIndex({ patient: patientName, phone, fileNo }, isDental);
+    } else if (window.MitaliFirebase && typeof window.MitaliFirebase.upsertRecord === "function") {
+      await window.MitaliFirebase.upsertRecord(indexColl, docData);
+    } else if (typeof window.firebase !== "undefined" && window.firebase.firestore) {
+      await window.firebase.firestore().collection(indexColl).doc(docId).set({
+        name: patientName,
+        phone: phone,
+        fileNo: fileNo,
+        updatedAt: docData.updatedAt
+      }, { merge: true });
+    }
+  } catch (err) {
+    console.warn("Failed to sync patient file index:", err);
+  }
+
+  // تحديث الذاكرة المؤقتة لقائمة المرضى لظهور المريض فوراً بدون انتظار إعادة التحميل
+  try {
+    const pageState = PATIENT_FILE_PAGE_STATE && PATIENT_FILE_PAGE_STATE[pageKey];
+    if (pageState && pageState.pages) {
+      for (const pNum in pageState.pages) {
+        const list = pageState.pages[pNum];
+        if (Array.isArray(list)) {
+          const existing = list.find(p => (p.fileNo && fileNo && p.fileNo === fileNo) || (p.phone && phone && p.phone === phone) || (p.name && p.name === patientName));
+          if (existing) {
+            existing.name = patientName || existing.name;
+            existing.phone = phone || existing.phone;
+            existing.fileNo = fileNo || existing.fileNo;
+            existing.updatedAt = docData.updatedAt;
+            break;
+          }
+        }
+      }
+    }
+  } catch (e) {}
+}
+
 // ======================================================================
 // صفحة يومية العيادات / الأسنان
 // ======================================================================
@@ -4285,7 +4337,10 @@ function renderVisitsPage(kind) {
     let pushFailedOnline = false;
     try {
       const incomeChanged = Number(rec.paid) > 0 || !!(editing && editing.linkedIncomeId);
-      const writes = [persist(isDental ? "visitsDental" : "visitsClinic")];
+      const writes = [
+        persist(isDental ? "visitsDental" : "visitsClinic"),
+        syncPatientIndexRecord(rec, kind)
+      ];
       if (incomeChanged) writes.push(persist("income"));
       await Promise.all(writes);
     } catch (err) {
@@ -4718,6 +4773,12 @@ async function loadPatientVisitsById(patientId, kind, patientRecord) {
         if (snap.empty && (patientRecord.name || patientRecord.patient)) {
           snap = await db.collection(collName).where("patient", "==", patientRecord.name || patientRecord.patient).get();
         }
+        if (snap.empty && patientRecord.phone) {
+          snap = await db.collection(collName).where("phone", "==", patientRecord.phone).get();
+        }
+      }
+      if (snap.empty && /^\d+$/.test(patientId)) {
+        snap = await db.collection(collName).where("fileNo", "==", patientId).get();
       }
       if (!snap.empty) {
         visits = snap.docs.map(d => ({ id: d.id, ...d.data(), kind, kindKey: listKey }));
@@ -4731,7 +4792,9 @@ async function loadPatientVisitsById(patientId, kind, patientRecord) {
     visits = DB[listKey].filter(v =>
       (v.patientId && v.patientId === patientId) ||
       (patientRecord && patientRecord.fileNo && v.fileNo === patientRecord.fileNo) ||
-      (patientRecord && (patientRecord.name || patientRecord.patient) && v.patient === (patientRecord.name || patientRecord.patient))
+      (patientRecord && (patientRecord.name || patientRecord.patient) && v.patient === (patientRecord.name || patientRecord.patient)) ||
+      (patientRecord && patientRecord.phone && v.phone === patientRecord.phone) ||
+      (v.fileNo && v.fileNo === patientId)
     ).map(v => ({ ...v, kind, kindKey: listKey }));
   }
 
@@ -6137,41 +6200,100 @@ function bindDoctorSettlementEvents(c) {
 }
 
 // ======================================================================
+const REPORTS_CACHE = Object.create(null);
+let REPORTS_API_DATA = null;
+let REPORTS_API_LOADING = false;
+let REPORTS_API_ERROR = null;
+let REPORTS_LAST_PARAMS = null;
+
+async function loadReportsDataIfNeeded() {
+  const range = state.reportMonthsRange || 6;
+  const closingMonth = state.closingMonth || todayISO().slice(0, 7);
+  const annualYear = state.annualReportYear || String(new Date().getFullYear());
+  state.doctorMonth = state.doctorMonth || state.doctorReportMonth || todayISO().slice(0, 7);
+  const doctorMonth = state.doctorMonth;
+  const includeAnnual = state.showAnnualReport ? "1" : "0";
+  const paramKey = `${range}|${closingMonth}|${annualYear}|${doctorMonth}|${includeAnnual}`;
+
+  if (REPORTS_CACHE[paramKey]) {
+    REPORTS_API_DATA = REPORTS_CACHE[paramKey];
+    REPORTS_LAST_PARAMS = paramKey;
+    REPORTS_API_ERROR = null;
+    return REPORTS_API_DATA;
+  }
+  if (REPORTS_API_DATA && REPORTS_LAST_PARAMS === paramKey && !REPORTS_API_LOADING) {
+    return REPORTS_API_DATA;
+  }
+  if (REPORTS_API_LOADING) return null;
+
+  REPORTS_API_LOADING = true;
+  REPORTS_API_ERROR = null;
+  try {
+    const fetcher = (window.MitaliFirebase && window.MitaliFirebase.getReportsData);
+    if (!fetcher) throw new Error("getReportsData is not available");
+    const data = await fetcher({ range, closingMonth, annualYear, doctorMonth, includeAnnual });
+    REPORTS_CACHE[paramKey] = data;
+    REPORTS_API_DATA = data;
+    REPORTS_LAST_PARAMS = paramKey;
+    REPORTS_API_LOADING = false;
+    route();
+    return data;
+  } catch (err) {
+    console.error("loadReportsData failed:", err);
+    let msg = err.message || "financial-reports-failed";
+    if (msg === "admin-api-timeout") {
+      msg = "استغرقت الاستجابة وقتاً أطول من المعتاد، يرجى إعادة المحاولة.";
+    } else if (msg === "firestore-resource-exhausted" || msg.includes("resource-exhausted")) {
+      msg = "تم بلوغ حد القراءات السحابية مؤقتاً، يرجى المحاولة بعد قليل.";
+    }
+    REPORTS_API_ERROR = msg;
+    REPORTS_API_LOADING = false;
+    route();
+    return null;
+  }
+}
+
 // تقرير سنوي/دوري جاهز للعرض والطباعة (مثلاً لمجلس الإدارة أو الجهات الداعمة)
 // ======================================================================
 function renderAnnualReportPrint() {
   const c = document.getElementById("content");
-  const visits = allRevenueVisits();
-  const allDatedItems = [...visits, ...DB.income, ...DB.expense];
-  const availableYears = [...new Set(allDatedItems.map(x => (x.date || "").slice(0, 4)).filter(Boolean))].sort().reverse();
-  const currentYear = String(new Date().getFullYear());
-  if (!availableYears.includes(currentYear)) availableYears.unshift(currentYear);
-  const year = state.annualReportYear && availableYears.includes(String(state.annualReportYear)) ? String(state.annualReportYear) : currentYear;
+  // للخوادم والأجهزة بدون اتصال، أو كخط أساس محاسبي:
+  // const visits = allRevenueVisits();
+  const reportsData = REPORTS_API_DATA;
+  if (!reportsData || !reportsData.annual || reportsData.annual.loaded === false) {
+    if (REPORTS_API_LOADING) {
+      c.innerHTML = `<div class="card" style="text-align:center; padding:40px 20px;"><div class="spinner" style="margin:0 auto 14px;"></div><div>جاري تحميل التقرير السنوي من الخادم بدقة كاملة...</div></div>`;
+      return;
+    }
+    if (REPORTS_API_ERROR) {
+      c.innerHTML = `<div class="card" style="text-align:center; padding:30px;"><div style="color:var(--expense); font-weight:700; margin-bottom:10px;">تعذر تحميل التقرير السنوي</div><div class="hint">${esc(REPORTS_API_ERROR)}</div><button class="btn sm" style="margin-top:14px;" id="retryAnnualReportBtn">إعادة المحاولة</button></div>`;
+      document.getElementById("retryAnnualReportBtn")?.addEventListener("click", () => {
+        REPORTS_API_DATA = null;
+        loadReportsDataIfNeeded();
+      });
+      return;
+    }
+    loadReportsDataIfNeeded();
+    c.innerHTML = `<div class="card" style="text-align:center; padding:40px 20px;"><div class="spinner" style="margin:0 auto 14px;"></div><div>جاري تجهيز التقرير السنوي...</div></div>`;
+    return;
+  }
 
-  const yearVisits = visits.filter(v => (v.date || "").startsWith(year));
-  const yearIncome = DB.income.filter(x => (x.date || "").startsWith(year));
-  const yearExpense = DB.expense.filter(x => (x.date || "").startsWith(year));
-  const totalIncome = yearIncome.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const totalExpense = yearExpense.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const netProfit = totalIncome - totalExpense;
-  const clinicVisitsCount = yearVisits.filter(v => v.kind === "عيادات").length;
-  const dentalVisitsCount = yearVisits.filter(v => v.kind === "أسنان").length;
-  const uniquePatients = groupPatients(yearVisits).length;
-
-  const byDoctorYear = DB.doctors.map(d => {
-    const dv = yearVisits.filter(v => v.doctorId === d.id);
-    const rev = dv.reduce((s, v) => s + (Number(v.paid) || 0), 0);
-    return { name: d.name, type: d.type, count: dv.length, rev };
-  }).filter(r => r.count > 0).sort((a, b) => b.rev - a.rev);
-
-  const byCategory = {};
-  yearIncome.forEach(x => { byCategory[x.category] = (byCategory[x.category] || 0) + (Number(x.amount) || 0); });
-  const byCategorySorted = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
+  const annual = reportsData.annual;
+  const availableYears = reportsData.availableYears || [String(new Date().getFullYear())];
+  const year = annual.year || String(new Date().getFullYear());
+  const totalIncome = annual.totalIncome || 0;
+  const totalExpense = annual.totalExpense || 0;
+  const netProfit = annual.netProfit || 0;
+  const clinicVisitsCount = annual.clinicVisitsCount || 0;
+  const dentalVisitsCount = annual.dentalVisitsCount || 0;
+  const uniquePatients = annual.uniquePatients || 0;
+  const byCategorySorted = annual.byCategorySorted || [];
+  const byDoctorYear = annual.byDoctorYear || [];
 
   c.innerHTML = `
     <div class="no-print" style="display:flex; gap:10px; align-items:center; margin-bottom:16px; flex-wrap:wrap;">
       <select id="annualReportYearSelect" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); color:var(--ink);">
-        ${availableYears.map(y => `<option value="${y}" ${year === y ? "selected" : ""}>${y}</option>`).join("")}
+        ${availableYears.map(y => `<option value="${y}" ${year === String(y) ? "selected" : ""}>${y}</option>`).join("")}
       </select>
       <button class="btn" id="printAnnualReportBtn">🖨️ طباعة / حفظ PDF</button>
       <button class="btn ghost" id="closeAnnualReportBtn">إغلاق</button>
@@ -6214,74 +6336,123 @@ function renderAnnualReportPrint() {
     </div>
   `;
   const annualReportYearSelect = document.getElementById("annualReportYearSelect");
-  if (annualReportYearSelect) annualReportYearSelect.addEventListener("change", () => { state.annualReportYear = annualReportYearSelect.value; route(); });
+  if (annualReportYearSelect) annualReportYearSelect.addEventListener("change", () => {
+    state.annualReportYear = annualReportYearSelect.value;
+    loadReportsDataIfNeeded();
+    route();
+  });
   const printAnnualReportBtn = document.getElementById("printAnnualReportBtn");
   if (printAnnualReportBtn) printAnnualReportBtn.addEventListener("click", () => window.print());
   const closeAnnualReportBtn = document.getElementById("closeAnnualReportBtn");
   if (closeAnnualReportBtn) closeAnnualReportBtn.addEventListener("click", () => { state.showAnnualReport = false; route(); });
 }
+
 function renderReports() {
   const c = document.getElementById("content");
   if (state.showAnnualReport) { renderAnnualReportPrint(); return; }
-  const visits = allRevenueVisits();
-  const monthNames = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
-  const year = new Date().getFullYear();
+  // مرجع توافق المحاسبة: const visits = allRevenueVisits();
 
-  // مدى التقرير الشهري قابل للاختيار (6 افتراضيًا بدل 12 ثابتة) عبر قائمة منسدلة؛
-  // "الكل" يحسب عدد الأشهر الفعلي من أقدم سجل موجود (زيارة/وارد/منصرف) وصولًا
-  // للشهر الحالى، بدل رقم ثابت افتراضى قد يكون أطول أو أقصر من عمر البيانات فعليًا.
-  const reportMonthsChoice = state.reportMonthsRange || 6;
-  const now2 = new Date();
-  let monthsCount;
-  if (reportMonthsChoice === "all") {
-    const allDates = [
-      ...visits.map(v => v.date), ...DB.income.map(x => x.date), ...DB.expense.map(x => x.date),
-    ].filter(Boolean).sort();
-    if (allDates.length) {
-      const first = new Date(allDates[0].slice(0, 4), Number(allDates[0].slice(5, 7)) - 1, 1);
-      monthsCount = Math.max(1, (now2.getFullYear() - first.getFullYear()) * 12 + (now2.getMonth() - first.getMonth()) + 1);
-    } else {
-      monthsCount = 6;
-    }
-  } else {
-    monthsCount = Number(reportMonthsChoice) || 6;
-  }
-  // آخر N شهرًا بالترتيب الزمنى وصولًا للشهر الحالى (بدلًا من شهور السنة
-  // التقويمية الحالية فقط 01-12، والتى كانت تُخفى بيانات أى شهر من سنة سابقة
-  // عند عبور حد السنة، مثلًا بيانات ديسمبر من العام الماضى).
-  const monthKeys = [...Array(monthsCount)].map((_, i) => {
-    const d = new Date(now2.getFullYear(), now2.getMonth() - (monthsCount - 1 - i), 1);
-    return { ym: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, y: d.getFullYear(), mIdx: d.getMonth() };
-  });
-
-  const monthlyRows = monthKeys.map(({ ym, y, mIdx }) => {
-    const rev = visits.filter(v => (v.date || "").startsWith(ym)).reduce((s, v) => s + (Number(v.paid) || 0), 0);
-    const financialSummary = cachedFinancialSummary(ym);
-    const inc = Number(financialSummary.totalIncome || financialSummary.income.total || 0);
-    const exp = Number(financialSummary.totalExpense || financialSummary.expense.total || 0);
-    const count = visits.filter(v => (v.date || "").startsWith(ym)).length;
-    const label = y === now2.getFullYear() ? monthNames[mIdx] : `${monthNames[mIdx]} ${y}`;
-    return { name: label, rev, inc, exp, net: inc - exp, count };
-  });
-
-  const byDoctor = DB.doctors.map(d => {
-    const dv = visits.filter(v => v.doctorId === d.id);
-    const di = DB.income.filter(r => r.doctorId === d.id);
-    const breakdown = doctorSettlementBreakdown(d, dv, di, 0);
-    return { name: d.name, type: d.type, count: breakdown.visitCount, rev: breakdown.grossRevenue, doc: breakdown.docShare, clinic: breakdown.clinicShare };
-  }).filter(r => r.count > 0).sort((a, b) => b.rev - a.rev);
-
-  const bySpecialty = {};
-  visits.forEach(v => {
-    const d = dInfo(v.doctorId);
-    const spec = d ? d.specialty : "غير محدد";
-    bySpecialty[spec] = (bySpecialty[spec] || 0) + (Number(v.paid) || 0);
-  });
-
+  const range = state.reportMonthsRange || 6;
   state.closingMonth = state.closingMonth || todayISO().slice(0, 7);
-  const closing = monthlyClosingData(state.closingMonth);
+  const closingMonth = state.closingMonth;
+  const annualYear = state.annualReportYear || String(new Date().getFullYear());
+  state.doctorMonth = state.doctorMonth || state.doctorReportMonth || todayISO().slice(0, 7);
+  const doctorMonth = state.doctorMonth;
+  const includeAnnual = state.showAnnualReport ? "1" : "0";
+  const paramKey = `${range}|${closingMonth}|${annualYear}|${doctorMonth}|${includeAnnual}`;
+
+  if (!REPORTS_API_DATA || REPORTS_LAST_PARAMS !== paramKey) {
+    if (REPORTS_API_LOADING) {
+      c.innerHTML = `
+        <div class="card" style="text-align:center; padding:50px 20px;">
+          <div class="spinner" style="margin:0 auto 16px;"></div>
+          <div style="font-size:15px; font-weight:700;">جاري تحميل بيانات التقارير من الخادم بدقة كاملة...</div>
+          <div class="hint" style="margin-top:6px;">يتم حساب أداء الأطباء، والتخصصات، والإقفال مباشرة.</div>
+        </div>
+      `;
+      return;
+    }
+    if (REPORTS_API_ERROR) {
+      c.innerHTML = `
+        <div class="card" style="text-align:center; padding:40px 20px;">
+          <div style="font-size:16px; font-weight:700; color:var(--expense); margin-bottom:8px;">تعذر تحميل بيانات التقارير</div>
+          <div class="hint" style="margin-bottom:16px;">${esc(REPORTS_API_ERROR)}</div>
+          <button class="btn sm" id="retryReportsBtn">إعادة المحاولة</button>
+        </div>
+      `;
+      document.getElementById("retryReportsBtn")?.addEventListener("click", () => {
+        REPORTS_API_DATA = null;
+        loadReportsDataIfNeeded();
+      });
+      return;
+    }
+    loadReportsDataIfNeeded();
+    c.innerHTML = `
+      <div class="card" style="text-align:center; padding:50px 20px;">
+        <div class="spinner" style="margin:0 auto 16px;"></div>
+        <div style="font-size:15px; font-weight:700;">جاري إعداد بيانات التقارير...</div>
+      </div>
+    `;
+    return;
+  }
+
+  const reportsData = REPORTS_API_DATA;
+  let byDoctor = reportsData.byDoctor || [];
+  let bySpecialty = reportsData.bySpecialty || {};
+  const closing = reportsData.closing || {
+    ym: closingMonth,
+    visitCount: 0,
+    visitRevenue: 0,
+    clinicShare: 0,
+    docShare: 0,
+    incomeByCat: {},
+    expenseByCat: {},
+    totalIncome: 0,
+    totalExpense: 0,
+    openingOfMonth: 0,
+    closingBalance: 0,
+    net: 0,
+    payrollPaid: 0,
+    payrollDue: 0
+  };
+
+  const monthNames = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
   const closingMonthName = monthNames[Number(closing.ym.slice(5, 7)) - 1] || "";
   const closingYear = closing.ym.slice(0, 4);
+  const currentDocM = state.doctorMonth || todayISO().slice(0, 7);
+  const doctorMonthName = monthNames[Number(currentDocM.slice(5, 7)) - 1] || "";
+  const doctorYear = currentDocM.slice(0, 4);
+
+  function renderDoctorTable(items) {
+    if (!items || !items.length) {
+      return `<table>
+        <thead><tr><th>الطبيب</th><th>النوع</th><th>عدد الزيارات</th><th>الإيرادات</th><th>حصة المجمع</th><th>حصة الطبيب</th></tr></thead>
+        <tbody><tr class="empty-row"><td colspan="6">لا توجد بيانات لهذا الشهر</td></tr></tbody>
+      </table>`;
+    }
+    return `<table>
+      <thead><tr><th>الطبيب</th><th>النوع</th><th>عدد الزيارات</th><th>الإيرادات</th><th>حصة المجمع</th><th>حصة الطبيب</th></tr></thead>
+      <tbody>
+        ${items.map(r => `<tr><td>${esc(r.name)}</td><td><span class="pill ${r.type==='أسنان'?'type-dental':'type-clinic'}">${r.type}</span></td><td>${r.count}</td><td>${fmt(r.rev)}</td><td>${fmt(r.clinic)}</td><td>${fmt(r.doc)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
+  }
+
+  function renderSpecialtyTable(specs) {
+    const entries = specs ? Object.entries(specs).sort((a,b)=>b[1]-a[1]) : [];
+    if (!entries.length) {
+      return `<table>
+        <thead><tr><th>التخصص</th><th>الإيرادات</th></tr></thead>
+        <tbody><tr class="empty-row"><td colspan="2">لا توجد بيانات لهذا الشهر</td></tr></tbody>
+      </table>`;
+    }
+    return `<table>
+      <thead><tr><th>التخصص</th><th>الإيرادات</th></tr></thead>
+      <tbody>
+        ${entries.map(([k,v]) => `<tr><td>${esc(k)}</td><td>${fmt(v)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
+  }
 
   c.innerHTML = `
     <div class="card no-print" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -6319,7 +6490,7 @@ function renderReports() {
             </table></div>
           </div>
         </div>
-                  <div class="grid grid-4" style="gap:10px;">
+        <div class="grid grid-4" style="gap:10px;">
           <div class="card kpi" style="box-shadow:none; border:1px solid var(--border,#eee);"><div class="label">زيارات الشهر (كل الأقسام)</div><div class="value">${fmtInt(closing.visitCount)}</div></div>
           <div class="card kpi" style="box-shadow:none; border:1px solid var(--border,#eee);"><div class="label">إيراد الزيارات المحصَّل</div><div class="value" style="color:#2A6DA6;">${fmt(closing.visitRevenue)} ج.م</div></div>
           <div class="card kpi" style="box-shadow:none; border:1px solid var(--border,#eee);" title="حصة المجمع والأطباء من كل الزيارات (كشف ومتابعة) لكل أنواع الأطباء"><div class="label">حصة المجمع / حصة الأطباء</div><div class="value" style="font-size:14px;">${fmt(closing.clinicShare)} / ${fmt(closing.docShare)}</div></div>
@@ -6328,78 +6499,126 @@ function renderReports() {
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:16px;">
-      <div class="section-title" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-        <span>التقرير الشهري</span>
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;" class="no-print">
-          <select id="reportMonthsSelect" style="font-size:12.5px; padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); color:var(--ink);">
-            <option value="6" ${reportMonthsChoice == 6 ? "selected" : ""}>آخر 6 أشهر</option>
-            <option value="12" ${reportMonthsChoice == 12 ? "selected" : ""}>آخر 12 شهرًا</option>
-            <option value="24" ${reportMonthsChoice == 24 ? "selected" : ""}>آخر 24 شهرًا</option>
-            <option value="all" ${reportMonthsChoice === "all" ? "selected" : ""}>كل البيانات</option>
-          </select>
-          <button class="btn ghost sm" id="exportMonthlyCsv">⬇️ تصدير Excel</button>
-        </div>
-      </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>الشهر</th><th>إيراد الزيارات</th><th>الوارد</th><th>المنصرف</th><th>صافي الربح</th><th>عدد العمليات</th></tr></thead>
-        <tbody>${monthlyRows.map(r => `<tr><td>${esc(r.name)}</td><td>${fmt(r.rev)}</td><td class="income">${fmt(r.inc)}</td><td class="expense">${fmt(r.exp)}</td><td style="font-weight:700; color:${r.net>=0?'var(--income)':'var(--expense)'}">${fmt(r.net)}</td><td>${r.count}</td></tr>`).join("")}</tbody>
-      </table></div>
-    </div>
-
     <div class="two-col" style="margin-bottom:16px;">
-      <div class="card">
+      <div class="card" id="doctorReportCard">
         <div class="section-title" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-          <span>تقرير حسب الطبيب</span>
-          <button class="btn ghost sm no-print" id="exportDoctorCsv">⬇️ تصدير Excel</button>
+          <span id="doctorReportTitle">تقرير حسب الطبيب (${doctorMonthName} ${doctorYear})</span>
+          <div class="no-print" style="display:flex; gap:8px; align-items:center;">
+            <input type="month" class="doctor-month-picker" id="doctorMonthInput" value="${currentDocM}" style="padding:4px 8px; font-size:12px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); color:var(--ink);">
+            <button class="btn ghost sm" id="exportDoctorCsv">⬇️ تصدير Excel</button>
+          </div>
         </div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>الطبيب</th><th>النوع</th><th>عدد الزيارات</th><th>الإيرادات</th><th>حصة المجمع</th><th>حصة الطبيب</th></tr></thead>
-          <tbody>${byDoctor.length ? byDoctor.map(r => `<tr><td>${esc(r.name)}</td><td><span class="pill ${r.type==='أسنان'?'type-dental':'type-clinic'}">${r.type}</span></td><td>${r.count}</td><td>${fmt(r.rev)}</td><td>${fmt(r.clinic)}</td><td>${fmt(r.doc)}</td></tr>`).join("") : `<tr class="empty-row"><td colspan="6">لا توجد بيانات</td></tr>`}</tbody>
-        </table></div>
+        <div class="table-wrap" id="doctorTableWrap">
+          ${renderDoctorTable(byDoctor)}
+        </div>
       </div>
-      <div class="card">
+      <div class="card" id="specialtyReportCard">
         <div class="section-title" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-          <span>تقرير حسب التخصص</span>
-          <button class="btn ghost sm no-print" id="exportSpecialtyCsv">⬇️ تصدير Excel</button>
+          <span id="specialtyReportTitle">تقرير حسب التخصص (${doctorMonthName} ${doctorYear})</span>
+          <div class="no-print" style="display:flex; gap:8px; align-items:center;">
+            <input type="month" class="doctor-month-picker" id="specialtyMonthInput" value="${currentDocM}" style="padding:4px 8px; font-size:12px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); color:var(--ink);">
+            <button class="btn ghost sm" id="exportSpecialtyCsv">⬇️ تصدير Excel</button>
+          </div>
         </div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>التخصص</th><th>الإيرادات</th></tr></thead>
-          <tbody>${Object.keys(bySpecialty).length ? Object.entries(bySpecialty).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `<tr><td>${esc(k)}</td><td>${fmt(v)}</td></tr>`).join("") : `<tr class="empty-row"><td colspan="2">لا توجد بيانات</td></tr>`}</tbody>
-        </table></div>
+        <div class="table-wrap" id="specialtyTableWrap">
+          ${renderSpecialtyTable(bySpecialty)}
+        </div>
       </div>
     </div>
   `;
 
   const closingMonthInput = document.getElementById("closingMonthInput");
-  if (closingMonthInput) closingMonthInput.addEventListener("change", () => { state.closingMonth = closingMonthInput.value; route(); });
-  const reportMonthsSelect = document.getElementById("reportMonthsSelect");
-  if (reportMonthsSelect) reportMonthsSelect.addEventListener("change", () => {
-    state.reportMonthsRange = reportMonthsSelect.value === "all" ? "all" : Number(reportMonthsSelect.value);
+  if (closingMonthInput) closingMonthInput.addEventListener("change", () => {
+    state.closingMonth = closingMonthInput.value;
+    loadReportsDataIfNeeded();
     route();
   });
+
   const printClosingBtn = document.getElementById("printClosingBtn");
   if (printClosingBtn) printClosingBtn.addEventListener("click", () => window.print());
   const openAnnualReportBtn = document.getElementById("openAnnualReportBtn");
-  if (openAnnualReportBtn) openAnnualReportBtn.addEventListener("click", () => { state.showAnnualReport = true; route(); });
+  if (openAnnualReportBtn) openAnnualReportBtn.addEventListener("click", () => {
+    state.showAnnualReport = true;
+    route();
+  });
 
-  const exportMonthlyBtn = document.getElementById("exportMonthlyCsv");
-  if (exportMonthlyBtn) exportMonthlyBtn.addEventListener("click", () => {
-    exportTableToCSV(`التقرير_الشهري_${year}.csv`,
-      ["الشهر","الإيرادات","الوارد","المنصرف","صافي الربح","عدد العمليات"],
-      monthlyRows.map(r => [r.name, r.rev, r.inc, r.exp, r.net, r.count]));
-  });
-  const exportDoctorBtn = document.getElementById("exportDoctorCsv");
-  if (exportDoctorBtn) exportDoctorBtn.addEventListener("click", () => {
-    exportTableToCSV("تقرير_الأطباء.csv",
-      ["الطبيب","النوع","عدد الزيارات","الإيرادات","حصة المجمع","حصة الطبيب"],
-      byDoctor.map(r => [r.name, r.type, r.count, r.rev, r.clinic, r.doc]));
-  });
-  const exportSpecialtyBtn = document.getElementById("exportSpecialtyCsv");
-  if (exportSpecialtyBtn) exportSpecialtyBtn.addEventListener("click", () => {
-    exportTableToCSV("تقرير_التخصصات.csv",
-      ["التخصص","الإيرادات"],
-      Object.entries(bySpecialty).sort((a,b)=>b[1]-a[1]));
+  function bindExportButtons() {
+    const exportDoctorBtn = document.getElementById("exportDoctorCsv");
+    if (exportDoctorBtn) {
+      exportDoctorBtn.onclick = () => {
+        exportTableToCSV(`تقرير_الأطباء_${state.doctorMonth}.csv`,
+          ["الطبيب","النوع","عدد الزيارات","الإيرادات","حصة المجمع","حصة الطبيب"],
+          byDoctor.map(r => [r.name, r.type, r.count, r.rev, r.clinic, r.doc]));
+      };
+    }
+    const exportSpecialtyBtn = document.getElementById("exportSpecialtyCsv");
+    if (exportSpecialtyBtn) {
+      exportSpecialtyBtn.onclick = () => {
+        exportTableToCSV(`تقرير_التخصصات_${state.doctorMonth}.csv`,
+          ["التخصص","الإيرادات"],
+          Object.entries(bySpecialty).sort((a,b)=>b[1]-a[1]));
+      };
+    }
+  }
+  bindExportButtons();
+
+  async function handleDoctorMonthChange(newMonth) {
+    if (!newMonth || !/^\d{4}-\d{2}$/.test(newMonth)) return;
+    state.doctorMonth = newMonth;
+    state.doctorReportMonth = newMonth;
+
+    document.querySelectorAll(".doctor-month-picker").forEach(inp => {
+      inp.value = state.doctorMonth;
+    });
+
+    const [y, m] = state.doctorMonth.split("-").map(Number);
+    const mName = monthNames[m - 1] || "";
+    const titleDoc = document.getElementById("doctorReportTitle");
+    if (titleDoc) titleDoc.textContent = `تقرير حسب الطبيب (${mName} ${y})`;
+    const titleSpec = document.getElementById("specialtyReportTitle");
+    if (titleSpec) titleSpec.textContent = `تقرير حسب التخصص (${mName} ${y})`;
+
+    const docWrap = document.getElementById("doctorTableWrap");
+    const specWrap = document.getElementById("specialtyTableWrap");
+    if (docWrap) docWrap.innerHTML = `<div style="text-align:center; padding:25px 10px;" class="hint">⏳ جارٍ جلب تقرير الأطباء لشهر ${mName} ${y}...</div>`;
+    if (specWrap) specWrap.innerHTML = `<div style="text-align:center; padding:25px 10px;" class="hint">⏳ جارٍ جلب تقرير التخصصات لشهر ${mName} ${y}...</div>`;
+
+    try {
+      const fetcher = (window.MitaliFirebase && window.MitaliFirebase.getReportsData);
+      if (!fetcher) throw new Error("getReportsData is not available");
+      const res = await fetcher({
+        range: state.reportMonthsRange || 6,
+        closingMonth: state.closingMonth || todayISO().slice(0, 7),
+        annualYear: state.annualReportYear || String(new Date().getFullYear()),
+        doctorMonth: state.doctorMonth,
+        includeAnnual: "0"
+      });
+
+      if (res) {
+        byDoctor = res.byDoctor || [];
+        bySpecialty = res.bySpecialty || {};
+        if (REPORTS_API_DATA) {
+          REPORTS_API_DATA.byDoctor = byDoctor;
+          REPORTS_API_DATA.bySpecialty = bySpecialty;
+        }
+        const cacheKey = `${state.reportMonthsRange || 6}|${state.closingMonth || todayISO().slice(0, 7)}|${state.annualReportYear || String(new Date().getFullYear())}|${state.doctorMonth}|0`;
+        REPORTS_CACHE[cacheKey] = res;
+      }
+
+      if (docWrap) docWrap.innerHTML = renderDoctorTable(byDoctor);
+      if (specWrap) specWrap.innerHTML = renderSpecialtyTable(bySpecialty);
+      bindExportButtons();
+    } catch (err) {
+      console.error("Failed to load doctor month reports:", err);
+      if (docWrap) docWrap.innerHTML = `<div style="text-align:center; padding:20px; color:var(--expense);" class="hint">تعذر تحميل بيانات الأطباء لهذا الشهر</div>`;
+      if (specWrap) specWrap.innerHTML = `<div style="text-align:center; padding:20px; color:var(--expense);" class="hint">تعذر تحميل بيانات التخصصات لهذا الشهر</div>`;
+    }
+  }
+
+  document.querySelectorAll(".doctor-month-picker").forEach(inp => {
+    inp.addEventListener("change", (e) => {
+      handleDoctorMonthChange(e.target.value);
+    });
   });
 }
 
@@ -8301,7 +8520,7 @@ const PAGE_REALTIME_KEYS = {
   operations: ["visitsOperations"], labs: ["visitsLabs"], radiology: ["visitsRadiology"],
   income: ["income"], expense: ["expense"], payroll: ["payroll"],
   ledger: ["income", "expense", "settings"],
-  reports: ["income", "expense", "payroll", ...REVENUE_VISIT_DB_KEYS],
+  reports: [],
   settings: ["doctors", "employees", "settings", "categories", "specialties"],
   patientFilesClinic: ["visitsClinic"], patientFilesDental: ["visitsDental"],
   outstandingBalances: ["doctors"],

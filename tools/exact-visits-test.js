@@ -248,7 +248,7 @@ function make(extra = {}) {
   // ١٢) لم نلمس: مفاتيح الصفحات، الحفظ، المزامنة، النوافذ
   assert.match(index, /const PAGE_SIZE = 30;/);
   assert.match(index, /dashboard: \["income", "expense"\]/);
-  assert.match(index, /reports: \["doctors", "employees", "visitsClinic"/);
+  assert.match(index, /reports: \[\]/);
   assert.match(index, /if \(visitSource && state\.page !== visitSource\.kindKey(?: && !patientFileSource)?\) options\.pageSize = 50;/);
 
   console.log('PASS exact-visits-test: outstanding balances and doctor settlement read ALL visits (all-time per department / the whole selected month) in an isolated store, never the 50-row window, show a loading/error card instead of partial numbers, and do not touch DB, page snapshots, sync or other pages.');

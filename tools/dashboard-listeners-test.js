@@ -47,7 +47,7 @@ checkEqual(sandbox.PAGE_REALTIME_KEYS.income, ["income"]);
 checkEqual(sandbox.PAGE_REALTIME_KEYS.expense, ["expense"]);
 checkEqual(sandbox.PAGE_REALTIME_KEYS.payroll, ["payroll"]);
 checkEqual(sandbox.PAGE_REALTIME_KEYS.ledger, ["income", "expense", "settings"]);
-checkEqual(sandbox.PAGE_REALTIME_KEYS.reports, ["income", "expense", "payroll", ...sandbox.REVENUE_VISIT_DB_KEYS]);
+checkEqual(sandbox.PAGE_REALTIME_KEYS.reports, []);
 checkEqual(sandbox.PAGE_REALTIME_KEYS.settings, ["doctors", "employees", "settings", "categories", "specialties"]);
 checkEqual(sandbox.PAGE_REALTIME_KEYS.patientFilesClinic, ["visitsClinic"]);
 checkEqual(sandbox.PAGE_REALTIME_KEYS.patientFilesDental, ["visitsDental"]);

@@ -82,12 +82,21 @@ async function aggregateCollection(api, name, month) {
   }
 }
 
+const SUMMARY_CACHE = new Map();
+const CACHE_TTL_MS = 60 * 1000;
+
 module.exports = async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') return json(res, 204, {});
   if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' });
   const month = requestedMonth(req);
   if (!month) return json(res, 400, { error: 'invalid-month' });
+
+  const cached = SUMMARY_CACHE.get(month);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return json(res, 200, cached.data);
+  }
+
   try {
     const api = getAdmin();
     await requireActiveUser(req, api);
@@ -95,17 +104,34 @@ module.exports = async function handler(req, res) {
       aggregateCollection(api, 'income', month),
       aggregateCollection(api, 'expense', month),
     ]);
-    return json(res, 200, {
+    const responseData = {
       month,
       income,
       expense,
       totalIncome: income.total,
       totalExpense: expense.total,
       net: income.total - expense.total,
-    });
+    };
+    SUMMARY_CACHE.set(month, { timestamp: Date.now(), data: responseData });
+    return json(res, 200, responseData);
   } catch (error) {
     const rawCode = String(error && error.code != null ? error.code : '');
     const rawMessage = String(error && error.message || '');
+
+    const isResourceExhausted =
+      rawCode === '8' ||
+      rawCode.includes('RESOURCE_EXHAUSTED') ||
+      rawMessage.includes('RESOURCE_EXHAUSTED') ||
+      rawMessage.includes('Quota exceeded');
+
+    if (isResourceExhausted) {
+      console.warn('financial-summary: firestore-resource-exhausted');
+      return json(res, 503, {
+        error: 'firestore-resource-exhausted',
+        retryable: true
+      });
+    }
+
     const isMisconfigured = (error && (rawCode === 'server-misconfigured' || rawCode === 'app/invalid-credential' || rawCode === '7' || rawCode.includes('permission-denied'))) || rawMessage.includes('credentials are not configured') || rawMessage.includes('PERMISSION_DENIED') || rawMessage.includes('Missing or insufficient permissions');
     const status = Number(error && error.status) || (isMisconfigured ? 503 : 500);
     if (!isMisconfigured) {

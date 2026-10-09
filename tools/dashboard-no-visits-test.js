@@ -9,7 +9,7 @@ assert.ok(dataKeys, 'PAGE_DATA_KEYS must exist');
 assert.match(dataKeys[1], /\n  dashboard: \["income", "expense"\],/, 'dashboard must load only income and expense');
 
 // ٢) الصفحات التي تحتاج الزيارات فعلًا ما زالت تحمّلها
-assert.match(dataKeys[1], /reports: \[[^\]]*"visitsClinic"[^\]]*"visitsRadiology"/);
+assert.match(dataKeys[1], /payroll: \[[^\]]*\.\.\.REVENUE_VISIT_DB_KEYS/);
 assert.match(dataKeys[1], /outstandingBalancesClinic: \["doctors", "visitsClinic"\]/);
 assert.match(dataKeys[1], /clinic: \["doctors", "visitsClinic"\]/);
 
