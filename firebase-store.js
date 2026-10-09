@@ -788,12 +788,25 @@
       // الاسم: يبدأ بما كتبه المستخدم
       const end = term + "\uf8ff";
 
-      const snap = await ref
+      let snap = await ref
         .where("name", ">=", term)
         .where("name", "<=", end)
         .orderBy("name")
         .limit(30)
         .get();
+
+      if (snap.empty) {
+        const altTerm = term.startsWith('ا') ? 'أ' + term.slice(1) : term.startsWith('أ') ? 'ا' + term.slice(1) : null;
+        if (altTerm) {
+          const altSnap = await ref
+            .where("name", ">=", altTerm)
+            .where("name", "<=", altTerm + "\uf8ff")
+            .orderBy("name")
+            .limit(30)
+            .get();
+          if (!altSnap.empty) snap = altSnap;
+        }
+      }
 
       recordReadMetric(collectionName, snap.docs.length);
       return snap.docs.map(d => ({ id: d.id, ...(typeof d.data === "function" ? d.data() : d.data) }));
@@ -812,14 +825,18 @@
     if (!name && !phone && !fileNo) return null;
 
     const targetCollection = isDental ? "patient_file_index_dental" : "patient_file_index_clinic";
-    const docId = (fileNo ? String(fileNo) : (phone ? `${name}_${phone}` : name))
-      .replace(/[\/\s#?]+/g, "_").slice(0, 100);
+    const pKey = fileNo ? ("F:" + fileNo) : ("N:" + name.toLowerCase() + "|" + phone);
+    const docId = pKey.replace(/\//g, "_").slice(0, 120);
 
     const docData = {
+      id: docId,
+      patientKey: pKey,
       name,
       phone,
       fileNo,
-      updatedAt: new Date().toISOString()
+      lastVisitDate: visit.date || new Date().toISOString().slice(0, 10),
+      lastVisitCreatedAt: visit.createdAt || new Date().toISOString(),
+      updatedAt: visit.createdAt || new Date().toISOString()
     };
 
     try {

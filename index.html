@@ -4154,33 +4154,38 @@ async function syncPatientIndexRecord(rec, kindKey) {
   const indexColl = isDental ? "patient_file_index_dental" : "patient_file_index_clinic";
   const pageKey = isDental ? "patientFilesDental" : "patientFilesClinic";
 
-  // معرّف المستند: إما رقم الملف fileNo أو تركيبة فريدة من الاسم والهاتف
-  const docId = (fileNo ? String(fileNo) : (phone ? `${patientName}_${phone}` : patientName))
-    .replace(/[\/\s#?]+/g, "_").slice(0, 100);
+  const pKey = fileNo ? ("F:" + fileNo) : ("N:" + patientName.toLowerCase() + "|" + phone);
+  const docId = pKey.replace(/\//g, "_").slice(0, 120);
 
   const docData = {
     id: docId,
+    patientKey: pKey,
     name: patientName,
     phone: phone,
     fileNo: fileNo,
-    updatedAt: new Date().toISOString()
+    lastVisitDate: rec?.date || todayISO(),
+    lastVisitCreatedAt: rec?.createdAt || nowISO(),
+    updatedAt: rec?.createdAt || nowISO()
   };
 
   try {
     if (window.MitaliFirebase && typeof window.MitaliFirebase.savePatientToIndex === "function") {
-      await window.MitaliFirebase.savePatientToIndex({ patient: patientName, phone, fileNo }, isDental);
+      await window.MitaliFirebase.savePatientToIndex({ patient: patientName, phone, fileNo, date: rec?.date, createdAt: rec?.createdAt }, isDental);
     } else if (window.MitaliFirebase && typeof window.MitaliFirebase.upsertRecord === "function") {
       await window.MitaliFirebase.upsertRecord(indexColl, docData);
     } else if (typeof window.firebase !== "undefined" && window.firebase.firestore) {
-      await window.firebase.firestore().collection(indexColl).doc(docId).set({
-        name: patientName,
-        phone: phone,
-        fileNo: fileNo,
-        updatedAt: docData.updatedAt
-      }, { merge: true });
+      await window.firebase.firestore().collection(indexColl).doc(docId).set(docData, { merge: true });
     }
   } catch (err) {
     console.warn("Failed to sync patient file index:", err);
+  }
+
+  // إبطال كاش الزيارات لهذا المريض حتى تظهر الزيارة الجديدة فوراً عند فتح ملفه
+  if (PATIENT_FILE_VISITS_CACHE && PATIENT_FILE_VISITS_CACHE[pageKey]) {
+    delete PATIENT_FILE_VISITS_CACHE[pageKey][docId];
+    delete PATIENT_FILE_VISITS_CACHE[pageKey][pKey];
+    delete PATIENT_FILE_VISITS_CACHE[pageKey][patientName];
+    if (fileNo) delete PATIENT_FILE_VISITS_CACHE[pageKey][fileNo];
   }
 
   // تحديث الذاكرة المؤقتة لقائمة المرضى لظهور المريض فوراً بدون انتظار إعادة التحميل
@@ -4190,15 +4195,33 @@ async function syncPatientIndexRecord(rec, kindKey) {
       for (const pNum in pageState.pages) {
         const list = pageState.pages[pNum];
         if (Array.isArray(list)) {
-          const existing = list.find(p => (p.fileNo && fileNo && p.fileNo === fileNo) || (p.phone && phone && p.phone === phone) || (p.name && p.name === patientName));
+          const existing = list.find(p => (p.fileNo && fileNo && p.fileNo === fileNo) || (p.phone && phone && p.phone === phone) || (p.name && p.name === patientName) || p.id === docId);
           if (existing) {
             existing.name = patientName || existing.name;
             existing.phone = phone || existing.phone;
             existing.fileNo = fileNo || existing.fileNo;
+            existing.lastVisitDate = docData.lastVisitDate;
+            existing.lastVisitCreatedAt = docData.lastVisitCreatedAt;
             existing.updatedAt = docData.updatedAt;
+            existing.visitsCount = (Number(existing.visitsCount) || 1) + 1;
             break;
           }
         }
+      }
+      if (pageState.pages[1] && !pageState.pages[1].some(p => p.id === docId || (p.name && p.name === patientName))) {
+        pageState.pages[1].unshift({
+          id: docId,
+          patientKey: pKey,
+          name: patientName,
+          phone: phone,
+          fileNo: fileNo,
+          visitsCount: 1,
+          lastVisitDate: docData.lastVisitDate,
+          lastVisitCreatedAt: docData.lastVisitCreatedAt,
+          totalPaid: Number(rec?.paid) || 0,
+          totalDue: Math.max(0, (Number(rec?.total) || 0) - (Number(rec?.paid) || 0)),
+          updatedAt: docData.updatedAt
+        });
       }
     }
   } catch (e) {}
@@ -4476,6 +4499,16 @@ function renderVisitsPage(kind) {
     if (oldMonth && oldMonth !== newMonth) {
       invalidateDoctorReportsCache(oldMonth);
     }
+    if (typeof PATIENT_FILE_VISITS_CACHE !== "undefined") {
+      PATIENT_FILE_VISITS_CACHE.patientFilesClinic = {};
+      PATIENT_FILE_VISITS_CACHE.patientFilesDental = {};
+    }
+    if (typeof PATIENT_FILE_PAGE_STATE !== "undefined") {
+      PATIENT_FILE_PAGE_STATE.patientFilesClinic.pages = {};
+      PATIENT_FILE_PAGE_STATE.patientFilesClinic.cursors = { 1: null };
+      PATIENT_FILE_PAGE_STATE.patientFilesDental.pages = {};
+      PATIENT_FILE_PAGE_STATE.patientFilesDental.cursors = { 1: null };
+    }
     ACTIVE_UI_SAVES.delete(saveKey);
     route();
     }
@@ -4551,6 +4584,16 @@ function renderVisitsPage(kind) {
       await persist(isDental ? "visitsDental" : "visitsClinic");
       const deletedMonth = (target?.date || removed?.date || '').slice(0, 7);
       if (deletedMonth) invalidateDoctorReportsCache(deletedMonth);
+      if (typeof PATIENT_FILE_VISITS_CACHE !== "undefined") {
+        PATIENT_FILE_VISITS_CACHE.patientFilesClinic = {};
+        PATIENT_FILE_VISITS_CACHE.patientFilesDental = {};
+      }
+      if (typeof PATIENT_FILE_PAGE_STATE !== "undefined") {
+        PATIENT_FILE_PAGE_STATE.patientFilesClinic.pages = {};
+        PATIENT_FILE_PAGE_STATE.patientFilesClinic.cursors = { 1: null };
+        PATIENT_FILE_PAGE_STATE.patientFilesDental.pages = {};
+        PATIENT_FILE_PAGE_STATE.patientFilesDental.cursors = { 1: null };
+      }
       showToast("تم الحذف");
     } catch (err) {
       console.error("Visit delete sync failed:", err);
@@ -4890,45 +4933,63 @@ async function loadPatientVisitsById(patientId, kind, patientRecord) {
   }
   const collName = kind === "أسنان" ? "visits_dental" : "visits_clinic";
   const listKey = kind === "أسنان" ? "visitsDental" : "visitsClinic";
-  let visits = [];
+  const visitMap = new Map();
+
+  const pName = String((patientRecord && (patientRecord.name || patientRecord.patient)) || (/^N:([^|]+)/.exec(patientId)?.[1]) || patientId || "").trim();
+  const pPhone = String((patientRecord && patientRecord.phone) || (/\|(.+)$/.exec(patientId)?.[1]) || "").trim();
+  const pFileNo = String((patientRecord && patientRecord.fileNo) || (/^F:(.+)$/.exec(patientId)?.[1]) || (/^\d+$/.test(patientId) ? patientId : "")).trim();
 
   if (typeof window.firebase !== "undefined" && window.firebase.firestore) {
     try {
       const db = window.firebase.firestore();
-      let snap = await db.collection(collName).where("patientId", "==", patientId).get();
-      if (snap.empty && patientRecord) {
-        if (patientRecord.fileNo) {
-          snap = await db.collection(collName).where("fileNo", "==", patientRecord.fileNo).get();
-        }
-        if (snap.empty && (patientRecord.name || patientRecord.patient)) {
-          snap = await db.collection(collName).where("patient", "==", patientRecord.name || patientRecord.patient).get();
-        }
-        if (snap.empty && patientRecord.phone) {
-          snap = await db.collection(collName).where("phone", "==", patientRecord.phone).get();
-        }
+      const queries = [];
+      if (pName) {
+        queries.push(db.collection(collName).where("patient", "==", pName).get());
+        const altName = pName.startsWith('ا') ? 'أ' + pName.slice(1) : pName.startsWith('أ') ? 'ا' + pName.slice(1) : null;
+        if (altName) queries.push(db.collection(collName).where("patient", "==", altName).get());
       }
-      if (snap.empty && /^\d+$/.test(patientId)) {
-        snap = await db.collection(collName).where("fileNo", "==", patientId).get();
+      if (pFileNo) {
+        queries.push(db.collection(collName).where("fileNo", "==", pFileNo).get());
       }
-      if (!snap.empty) {
-        visits = snap.docs.map(d => ({ id: d.id, ...d.data(), kind, kindKey: listKey }));
+      if (pPhone) {
+        queries.push(db.collection(collName).where("phone", "==", pPhone).get());
       }
+      if (/^\d+$/.test(patientId) && patientId !== pFileNo) {
+        queries.push(db.collection(collName).where("fileNo", "==", patientId).get());
+      }
+
+      const snapshots = await Promise.all(queries);
+      snapshots.forEach(snap => {
+        if (!snap.empty) {
+          snap.docs.forEach(d => {
+            if (!visitMap.has(d.id)) {
+              visitMap.set(d.id, { id: d.id, ...d.data(), kind, kindKey: listKey });
+            }
+          });
+        }
+      });
     } catch (err) {
       console.warn("Firestore patient visits fetch failed, checking local DB:", err);
     }
   }
 
-  if (!visits.length && Array.isArray(DB[listKey])) {
-    visits = DB[listKey].filter(v =>
-      (v.patientId && v.patientId === patientId) ||
-      (patientRecord && patientRecord.fileNo && v.fileNo === patientRecord.fileNo) ||
-      (patientRecord && (patientRecord.name || patientRecord.patient) && v.patient === (patientRecord.name || patientRecord.patient)) ||
-      (patientRecord && patientRecord.phone && v.phone === patientRecord.phone) ||
-      (v.fileNo && v.fileNo === patientId)
-    ).map(v => ({ ...v, kind, kindKey: listKey }));
+  if (Array.isArray(DB[listKey])) {
+    DB[listKey].forEach(v => {
+      const vName = String(v.patient || v.name || "").trim();
+      const vPhone = String(v.phone || "").trim();
+      const vFileNo = String(v.fileNo || "").trim();
+      const match =
+        (pName && (vName === pName || vName.toLowerCase() === pName.toLowerCase())) ||
+        (pFileNo && vFileNo === pFileNo) ||
+        (pPhone && vPhone === pPhone) ||
+        (v.id && (v.patientId === patientId || v.fileNo === patientId));
+      if (match && !visitMap.has(v.id)) {
+        visitMap.set(v.id, { ...v, kind, kindKey: listKey });
+      }
+    });
   }
 
-  const sorted = sortByEntryOrderDesc(visits);
+  const sorted = sortByEntryOrderDesc(Array.from(visitMap.values()));
   PATIENT_FILE_VISITS_CACHE[pageKey][patientId] = sorted;
   return sorted;
 }
